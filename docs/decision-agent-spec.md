@@ -505,9 +505,11 @@ Implemented first steps:
 - atomic profile writes through temp-file replacement
 - candidate entries that promote only after the same pattern recurs across at
   least two distinct records without contradiction
-- conflict handling through `contradicts_established_rule` and
-  `low_confidence_disagreement`, resolved non-interactively through the rules
-  commands
+- established-rule conflicts flagged as `contradicts_established_rule`, with
+  `rules approve` / `rules reject` used to keep the established rule or accept
+  the new signal
+- informational `low_confidence_disagreement` annotations on decision records;
+  recording and candidate promotion continue without manual resolution
 - hit/miss and `last_used_at` updates for rules cited by review issues
 
 Still incomplete:
