@@ -233,9 +233,10 @@ partially written profile JSON.
 
 See [docs/operation-guide.md](docs/operation-guide.md) for the intended operating
 loop: review, capture user judgment, iterate, evaluate, then update the profile
-only with rules the user agrees with. The implementation roadmap toward
-LLM-backed review, rule extraction, and semantic evaluation is defined in
-[docs/detailed-design.md](docs/detailed-design.md).
+only with rules the user agrees with. The implemented architecture and the
+remaining roadmap for rule extraction and semantic evaluation are described in
+[docs/detailed-design.md](docs/detailed-design.md). Historical alternatives in
+that document are explicitly marked as such.
 
 ## Option Ranking
 
