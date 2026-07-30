@@ -62,10 +62,35 @@ PYTHONPATH=src python -m decision_agent.cli review \
   --engine heuristic
 ```
 
-`heuristic` is the only implemented engine today. It is deterministic, requires
-no API key, and records `"engine": "heuristic"` in review output. The LLM engine
-is specified in [detailed-design.md](detailed-design.md), but `--engine llm`
-currently fails fast so review records do not silently mix engine behavior.
+`heuristic` is the default engine. It is deterministic, requires no API key, and
+records `"engine": "heuristic"` in review output.
+
+The implemented `llm` engine delegates review to
+[local-agent-gateway](https://github.com/s-hiraoku/local-agent-gateway). The
+gateway owns authentication, provider/model selection, policy, and audit. Start
+the gateway, authenticate its dedicated `CODEX_HOME`, and configure Decision
+Agent with the gateway's owner token:
+
+```bash
+export DECISION_AGENT_GATEWAY_URL=http://127.0.0.1:8787
+export DECISION_AGENT_GATEWAY_TOKEN='a-long-random-owner-token'
+
+PYTHONPATH=src python -m decision_agent.cli review \
+  profiles/default.json \
+  requests/blog-outline-request.json \
+  --records records/blog_outline.jsonl \
+  --engine llm
+```
+
+By default, LLM reviews use `POST /v2/inference/runs`; no repository registration
+is required. `DECISION_AGENT_GATEWAY_REPO` is optional and selects a read-only
+`POST /v2/coding/runs` request for compatibility with an older gateway. Use
+`DECISION_AGENT_GATEWAY_TIMEOUT` to override the 120-second polling deadline.
+
+The LLM engine requires the token and a reachable gateway but adds no Python
+package dependency. It does not silently fall back to `heuristic`: a gateway,
+authentication, timeout, task, or structured-output failure exits with an error
+so records never mix engine behavior unexpectedly.
 
 The output contains:
 
@@ -138,6 +163,11 @@ The report includes:
 - `revision_direction_accuracy`: how often the suggested direction matches
 - `common_misses`: recurring issues the agent fails to notice
 - `suggested_profile_updates`: candidate rules to add to the profile
+
+`--engine llm` changes the engine that produces each review. Agreement scoring
+in the current implementation remains heuristic text matching for both engines;
+an LLM-based semantic agreement judge is still future work. Do not compare
+evaluation numbers across engines as though they measured identical behavior.
 
 Do not automatically apply all suggested profile updates. Review them and add
 only the rules that actually represent the user's judgment.
