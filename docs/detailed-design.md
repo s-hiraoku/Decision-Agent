@@ -25,7 +25,7 @@
 | G2 | 自由記述フィードバックからの耐久的ルール抽出 | **一部実装:** 候補ルールの昇格・競合解決フローは実装済み。自由記述からの LLM 抽出は未実装(§6) |
 | G3 | 評価のセマンティックマッチング | **一部実装:** heuristic 側の文字 n-gram。LLM ジャッジは未実装(§7) |
 | G4 | 生成エージェントとのオーケストレーション | Revise ループの JSON 契約定義(§8。実装は契約のみ、生成側は非スコープ) |
-| G5 | 数値スコアでない、ユーザー整合の判断最適化 | **一部実装:** 構造化ルール、反復による昇格、矛盾フラグ、実績カウント。高度な最適化は未実装(§3, §6) |
+| G5 | 数値スコアでない、ユーザー整合の判断最適化 | **一部実装:** 構造化ルール、反復による昇格、限定的な矛盾フラグ、実績カウント。高度な最適化は未実装(§3, §6) |
 
 ### 1.2 設計原則(仕様書から継承)
 
@@ -35,7 +35,9 @@
    `--engine llm` を明示した場合は Gateway 障害時にも heuristic へ自動フォールバックしない。
 4. **プロファイルは編集可能な要約、JSONL は append-only の生の証拠。** この分離は崩さない。
 5. **学習単位は「エージェントの判断とユーザーの判断の差分」。** スコアではない。
-6. **提案は自動採用しない。** LLM が抽出したルールは candidate 状態にとどめ、ユーザー承認で active になる。
+6. **LLM 抽出案は自動採用しない。** 将来 LLM が自由記述から抽出するルールは
+   candidate 状態にとどめ、ユーザー承認を要求する。現在の明示フィードバック由来の
+   candidate は、同じパターンが別レコードで反復すると自動昇格する。
 
 ### 1.3 非スコープ
 
@@ -175,6 +177,7 @@ text を編集した場合は別ルール(新 ID)になり、旧ルールは ret
 **status の遷移:**
 
 ```text
+candidate --(同一パターンが別レコードで 2 回以上)--> active
 candidate --(ユーザー承認: rules approve)--> active
 candidate --(ユーザー却下: rules reject)---> 削除
 active    --(ユーザー操作 or 降格提案の承認)--> retired
@@ -182,7 +185,11 @@ active    --(ユーザー操作 or 降格提案の承認)--> retired
 
 retired はプロファイルに残す(削除しない)。review 時に参照されないが、
 同じルールが再抽出されたときの重複検出に使う。
-自動遷移は一切行わない。evaluate は降格・昇格の**提案**のみ出す(§7.4)。
+自動昇格は同一の fuzzy-matched text の反復だけを根拠にする。preference rule
+同士の意味的な反対関係は検出しない。negative pattern と positive example の
+同一パターン衝突は `contradicts_established_rule` で候補側にフラグを付けるが、
+候補を approve しても反対側の active entry は自動 retire されない。置換する
+場合は既存 entry に `rules retire` を別途実行する。
 
 ### 3.2 RuleProposalSet(ルール抽出の出力)
 
@@ -491,6 +498,8 @@ decision-agent rules retire  profiles/default.json <rule-id> [--output ...]
 
 - `list` は id / status / source / hit・miss / text を表形式(または `--json`)で出す。
 - `approve` は candidate → active。`reject` は candidate をプロファイルから削除。
+- 反対 polarity の pattern candidate を `approve` しても、既存の反対 entry は
+  active のまま残る。置換する場合は既存 entry を別途 `retire` する。
 - 対話プロンプトは実装しない(スクリプタブルに保つ。対話はチャット層の仕事)。
 
 ### 6.4 known_mistakes の扱い
@@ -796,16 +805,27 @@ uv run pyright
 
 - 埋め込みベースの履歴検索(JSONL が数千件を超えたら再検討)
 - 評価ケースの自動生成
-- ルールの自動昇格(実績データが十分溜まってから設計する)
 
 ## 12. 設計判断の記録(ADR 要約)
+
+### 12.1 現在採用している判断
 
 | 判断 | 理由 |
 |------|------|
 | 既定エンジンを heuristic のままにする | 「API キー不要で動く」という現在の性質を破壊しない。LLM はオプトイン |
 | LLM 失敗時に heuristic へ自動フォールバックしない | レビュー品質の性質が黙って変わると、JSONL に混在した記録の解釈が壊れる |
-| ルール抽出は candidate 止まり、承認必須 | 仕様の「suggested updates are proposals, not automatic truth」の一貫適用 |
-| evaluate の LLM ジャッジは review と同一モデル | 評価数値がシステムの改善判断の根幹であり、判定品質を落とすと全体が狂う |
-| evaluate は直列実行 | プロファイルキャッシュを 2 件目以降に確実に効かせるため |
-| Pydantic モデルを models.py に持ち込まない | コアのデータモデルを依存ゼロに保つ。LLM 層の境界で変換する |
+| LLM transport を Gateway に委譲する | 認証・ポリシー・監査・provider/model 選択を Decision Agent から分離し、Python 依存ゼロを保つ |
+| 明示フィードバック由来の candidate を反復で自動昇格する | 同一パターンが別レコードで 2 回以上現れたことを、active 化の最小証拠とする |
+| 矛盾検出を限定的に扱う | known-mistake の verdict 競合と positive/negative の同一パターンだけを検出する。preference rule 間の意味的矛盾は未検出 |
+| evaluate の一致判定は heuristic のままにする | LLM ReviewEngine を選んでも、現行の AgreementJudge は決定的な heuristic 実装だけである |
 | rules コマンドは非対話 | スクリプタブルに保つ。対話 UI は将来のチャット層の責務 |
+
+### 12.2 将来案・不採用案
+
+- 自由記述からの LLM ルール抽出を実装する場合、抽出結果は candidate とし、
+  自動採用しない。
+- semantic AgreementJudge は将来案であり、導入時には heuristic 評価と指標を
+  混在させない。
+- Anthropic SDK 直接呼び出し、Pydantic 出力モデル、Decision Agent 側の prompt
+  caching と直列 evaluate は不採用になった歴史的案である。現行の Gateway 実装の
+  要件ではない。

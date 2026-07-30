@@ -233,9 +233,11 @@ partially written profile JSON.
 
 See [docs/operation-guide.md](docs/operation-guide.md) for the intended operating
 loop: review, capture user judgment, iterate, evaluate, then update the profile
-through recurring, non-conflicting feedback. Candidate rules promote
-automatically after enough distinct occurrences; `rules approve` / `rules reject`
-resolve conflicts with established rules. The implemented architecture and the
+through recurring feedback. Candidate entries promote automatically after enough
+distinct same-pattern occurrences. Opposite positive/negative patterns and
+conflicting known-mistake verdicts are flagged for manual review; approving an
+opposite-pattern candidate does not retire the established entry, so retire that
+entry separately when replacing it. The implemented architecture and the
 remaining roadmap for rule extraction and semantic evaluation are described in
 [docs/detailed-design.md](docs/detailed-design.md). Historical alternatives in
 that document are explicitly marked as such.

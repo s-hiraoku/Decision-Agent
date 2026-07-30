@@ -503,11 +503,15 @@ Implemented first steps:
 - `rules list/approve/reject/retire` CLI behavior for non-interactive rule
   lifecycle management
 - atomic profile writes through temp-file replacement
-- candidate entries that promote only after the same pattern recurs across at
-  least two distinct records without contradiction
-- established-rule conflicts flagged as `contradicts_established_rule`, with
-  `rules approve` / `rules reject` used to keep the established rule or accept
-  the new signal
+- candidate entries that promote after the same fuzzy-matched pattern recurs
+  across at least two distinct records. Preference rules do not currently
+  detect semantically opposing rules expressed as different text
+- opposite positive/negative patterns flagged as
+  `contradicts_established_rule`; approving the candidate activates it but does
+  not retire the established opposite entry, which must be retired separately
+- established known-mistake verdict conflicts flagged as
+  `contradicts_established_rule`, with `rules approve` / `rules reject` used to
+  keep the established correction or accept the pending correction
 - informational `low_confidence_disagreement` annotations on decision records;
   recording and candidate promotion continue without manual resolution
 - hit/miss and `last_used_at` updates for rules cited by review issues
