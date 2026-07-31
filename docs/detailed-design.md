@@ -234,7 +234,13 @@ violated_rule_id: str = ""  # 違反した PreferenceRule / PatternEntry の id(
 DecisionRecord に engine が保存されるため、後から「LLM レビューと heuristic レビューで
 delta の傾向がどう違うか」を JSONL から分析できる。
 
-### 3.5 決定履歴の Source of Truth 一本化
+### 3.5 決定履歴の Source of Truth 一本化（未実装の設計案）
+
+> **現在の実装:** `DecisionProfile.decision_records` は残っており、`learn` /
+> `iterate` は新しい record をプロファイルへ埋め込んで保存する。`--records`
+> 指定時は同じ record を JSONL にも追記するため、二重永続化である。
+> `migrate-history` は実行時点の埋め込み履歴を空にするが、後続の学習で再び
+> 埋め込まれる。以下は JSONL を唯一の Source of Truth にする将来設計である。
 
 **現状の問題:** 仕様書(設計原則 4)は「プロファイルは編集可能な要約、JSONL は
 append-only の生の証拠」と定めているが、現行実装はこれに反する。
@@ -783,7 +789,7 @@ uv run pyright
 当初の Phase 1〜3 のうち、次は実装済みである。
 
 - engine 抽象化と heuristic ロジックの分離
-- JSONL 履歴、履歴移行、原子的保存
+- JSONL 履歴の追記・移行と原子的保存（プロファイル埋め込み履歴との二重永続化は残る）
 - 構造化ルール、候補昇格、矛盾フラグ、rules CLI
 - 日本語／混在テキストの文字 n-gram 照合
 - Gateway V2 inference API を使う LLM レビュー

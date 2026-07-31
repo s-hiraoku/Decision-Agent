@@ -29,6 +29,13 @@ cases/
 - `records/*.jsonl` is append-only operational history.
 - `cases/*.jsonl` is a fixed evaluation set used to measure improvement.
 
+The current implementation has dual history persistence: `learn` / `iterate`
+append the new record to `DecisionProfile.decision_records`, and `--records`
+also writes JSONL. Commands prefer an explicitly supplied `--records` file for
+review/evaluation history; without it they can fall back to embedded profile
+history. Treat JSONL as the recommended operational log, but not yet as the
+only source of truth.
+
 Profile rules are stored as structured objects with stable IDs. Legacy profiles
 that still use plain strings are accepted on read and are written back as
 structured entries the next time the profile is saved.
@@ -47,8 +54,10 @@ PYTHONPATH=src python -m decision_agent.cli migrate-history \
 ```
 
 The command reads the legacy embedded rows directly from the old JSON, appends
-them to JSONL, and saves the profile without embedded history. Re-running the
-command is safe because JSONL appends skip duplicate logical records.
+them to JSONL, and saves the profile with its current embedded history emptied.
+Re-running the command is safe because JSONL appends skip duplicate logical
+records. A subsequent `learn` or `iterate` can embed new records again until
+the planned JSONL-only migration is implemented.
 
 ## 1. Review An Artifact
 

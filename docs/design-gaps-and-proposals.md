@@ -1,9 +1,11 @@
 # Decision Agent 設計ギャップと改善設計書
 
 > **文書の位置づけ:** これは初期実装に対するギャップ分析と提案の記録であり、
-> 現在の実装状況を表す運用文書ではない。日本語文字 n-gram、履歴の JSONL
-> 一本化、構造化ルールとライフサイクル、原子的書き込み、`ReviewEngine`
+> 現在の実装状況を表す運用文書ではない。日本語文字 n-gram、構造化ルールと
+> ライフサイクル、原子的書き込み、`ReviewEngine`
 > 抽象化、local-agent-gateway 経由の LLM レビューは実装済み。
+> 履歴の JSONL 一本化は未実装で、現在はプロファイル埋め込みと JSONL の
+> 二重永続化が残る。
 > 現在の利用方法は [operation-guide.md](operation-guide.md)、実装済み／未実装の
 > 境界は [decision-agent-spec.md](decision-agent-spec.md) の
 > “Current Implementation Status” を参照すること。以下の `現状` と設計案は、
