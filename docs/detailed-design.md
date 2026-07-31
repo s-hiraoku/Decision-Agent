@@ -1,5 +1,12 @@
 # Decision Agent 詳細設計書
 
+> **実装同期メモ:** 本書には、実装済みの設計と採用されなかった歴史的な案が
+> 混在する。現在の LLM レビューは Anthropic SDK や Claude CLI を直接使わず、
+> `local-agent-gateway` の V2 API に委譲する。既定はリポジトリ不要の
+> `/v2/inference/runs`、`DECISION_AGENT_GATEWAY_REPO` 設定時のみ互換用の
+> `/v2/coding/runs` を使う。現行 CLI は §9 の「実装済み CLI」を正とし、
+> 各節で「歴史的案」または「将来」と明記した内容は未実装である。
+
 本書は [decision-agent-spec.md](decision-agent-spec.md) の「Still incomplete」を解消し、
 実装可能なレベルまで設計を落とし込むための詳細設計書である。
 仕様書がデータモデルと振る舞いの「何を」を定義するのに対し、本書は「どう作るか」を定義する。
@@ -14,30 +21,34 @@
 
 | # | ギャップ | 本書での解決 |
 |---|---------|------------|
-| G1 | LLM ベースのレビュー | `ReviewEngine` 抽象化 + `LLMReviewEngine`(§4, §5) |
-| G2 | 自由記述フィードバックからの耐久的ルール抽出 | LLM による候補ルール抽出 + ユーザー承認フロー(§6) |
-| G3 | 評価のセマンティックマッチング | LLM ジャッジによる一致判定 + heuristic 側の文字 n-gram 化(§7) |
+| G1 | LLM ベースのレビュー | **実装済み:** `ReviewEngine` 抽象化 + Gateway 版 `LLMReviewEngine`(§4, §5) |
+| G2 | 自由記述フィードバックからの耐久的ルール抽出 | **一部実装:** 候補ルールの昇格・競合解決フローは実装済み。自由記述からの LLM 抽出は未実装(§6) |
+| G3 | 評価のセマンティックマッチング | **一部実装:** heuristic 側の文字 n-gram。LLM ジャッジは未実装(§7) |
 | G4 | 生成エージェントとのオーケストレーション | Revise ループの JSON 契約定義(§8。実装は契約のみ、生成側は非スコープ) |
-| G5 | 数値スコアでない、ユーザー整合の判断最適化 | ルールの構造化(provenance / status / 実績カウント)と評価駆動の昇格・降格(§3, §6) |
+| G5 | 数値スコアでない、ユーザー整合の判断最適化 | **一部実装:** 構造化ルール、反復による昇格、限定的な矛盾フラグ、実績カウント。高度な最適化は未実装(§3, §6) |
 
 ### 1.2 設計原則(仕様書から継承)
 
 1. **判断が責務、生成は責務外。**
 2. **自然言語ファースト。** ルール・パターンは常に人間が読め、編集できる。
-3. **LLM はプラガブル。** LLM なしでも全コマンドが動作する(既存の決定的実装がフォールバック)。
+3. **LLM はプラガブル。** 既定の heuristic 経路は LLM なしで動作する。
+   `--engine llm` を明示した場合は Gateway 障害時にも heuristic へ自動フォールバックしない。
 4. **プロファイルは編集可能な要約、JSONL は append-only の生の証拠。** この分離は崩さない。
 5. **学習単位は「エージェントの判断とユーザーの判断の差分」。** スコアではない。
-6. **提案は自動採用しない。** LLM が抽出したルールは candidate 状態にとどめ、ユーザー承認で active になる。
+6. **LLM 抽出案は自動採用しない。** 将来 LLM が自由記述から抽出するルールは
+   candidate 状態にとどめ、ユーザー承認を要求する。現在の明示フィードバック由来の
+   candidate は、同じパターンが別レコードで反復すると自動昇格する。
 
 ### 1.3 非スコープ
 
 - Web UI、ベクトル DB、強化学習、マルチユーザー管理(仕様書の Out of Scope を踏襲)
 - 生成エージェント本体の実装(§8 は契約定義のみ)
-- Anthropic 以外の LLM プロバイダ対応(抽象化は入れるが実装しない)
+- Decision Agent 内での LLM プロバイダ固有対応。プロバイダとモデルの選択は
+  local-agent-gateway の責務とする
 
 ## 2. アーキテクチャ全体像
 
-### 2.1 モジュール構成(目標状態)
+### 2.1 モジュール構成(実装済みの主要部分)
 
 ```text
 src/decision_agent/
@@ -46,17 +57,19 @@ src/decision_agent/
   cli.py             # CLI(§9 で拡張)
   agent.py           # DecisionAgent: ループの制御のみ担う(薄くする)
   engines/
-    __init__.py      # ReviewEngine / FeedbackExtractor / AgreementJudge の Protocol 定義
-    heuristic.py     # 既存の決定的実装を agent.py から移設
-    llm.py           # Anthropic API ベースの実装(§5)
-  prompts.py         # LLM プロンプトのテンプレート(全プロンプトをここに集約)
-  rendering.py       # プロファイル・履歴の決定的シリアライズ(§5.4 キャッシュ前提)
+    __init__.py      # ReviewEngine / FeedbackExtractor / AgreementJudge の Protocol
+    heuristic.py     # 決定的レビューと heuristic AgreementJudge
+    llm.py           # local-agent-gateway V2 API 版 ReviewEngine
 ```
 
 `DecisionAgent` は「review → learn → evaluate のループ制御」と「エンジンへの委譲」だけを持ち、
 判定ロジック本体は `engines/` に置く。既存の `agent.py` 内のヒューリスティック
-(`_text_similarity`、`_matched_items` など)は `engines/heuristic.py` へ移設する。
+(`_text_similarity`、`_matched_items` など)は `engines/heuristic.py` へ移設済み。
 既存の option-ranking(`decide` / `train`)は `agent.py` に残す(凍結。今後拡張しない)。
+
+当初案の `prompts.py` と `rendering.py` は作成していない。Gateway 用プロンプトと
+JSON Schema は現在 `engines/llm.py` にあり、プロバイダ固有のキャッシュや
+レンダリングは Gateway 側の関心事とする。
 
 ### 2.2 抽象インターフェース
 
@@ -105,26 +118,24 @@ class AgreementJudgment:
     revision_direction_reasoning: str
 ```
 
-各 Protocol に heuristic 実装(既存ロジック)と LLM 実装を用意する。
-エンジンの選択は CLI の `--engine {heuristic,llm}` で行い、既定は `heuristic`
-(API キー不要という現在の性質を既定として維持する)。
+`ReviewEngine` には heuristic と LLM の両実装がある。`AgreementJudge` は
+heuristic 実装のみで、`FeedbackExtractor` の LLM 実装は将来課題である。
+エンジンの選択は CLI の `--engine {heuristic,llm}` で行い、既定は
+`heuristic`（API キー不要という性質を維持）とする。
 
 ### 2.3 依存関係
 
-`pyproject.toml` に optional dependency を追加する。
+本体にも LLM 経路にも Python パッケージ依存を追加しない。
+`engines/llm.py` は標準ライブラリの `urllib` で local-agent-gateway を呼ぶ。
+認証、プロバイダ、モデル、ポリシー、監査は Gateway が所有する。
 
-```toml
-[project.optional-dependencies]
-llm = ["anthropic>=0.92.0"]
-```
+Decision Agent が参照する環境変数:
 
-`engines/llm.py` は `anthropic` を関数内 import し、未インストール環境で
-`--engine llm` を指定した場合は明確なエラーメッセージ
-(`pip install 'decision-agent[llm]'` の案内)を出して終了コード 2 で落ちる。
-`--engine heuristic`(既定)の経路は今までどおり依存ゼロで動く。
-
-認証は Anthropic SDK の標準解決(`ANTHROPIC_API_KEY` → `ANTHROPIC_AUTH_TOKEN` →
-`ant auth login` プロファイル)に任せ、独自のキー管理は実装しない。
+- `DECISION_AGENT_ENGINE`: CLI フラグ未指定時のエンジン
+- `DECISION_AGENT_GATEWAY_URL`: Gateway URL（既定 `http://127.0.0.1:8787`）
+- `DECISION_AGENT_GATEWAY_TOKEN`: 必須の owner bearer token
+- `DECISION_AGENT_GATEWAY_TIMEOUT`: polling timeout 秒（既定 120）
+- `DECISION_AGENT_GATEWAY_REPO`: 任意。設定時のみ互換用 coding run を使う
 
 ## 3. データモデル拡張
 
@@ -166,6 +177,7 @@ text を編集した場合は別ルール(新 ID)になり、旧ルールは ret
 **status の遷移:**
 
 ```text
+candidate --(同一パターンが別レコードで 2 回以上)--> active
 candidate --(ユーザー承認: rules approve)--> active
 candidate --(ユーザー却下: rules reject)---> 削除
 active    --(ユーザー操作 or 降格提案の承認)--> retired
@@ -173,7 +185,11 @@ active    --(ユーザー操作 or 降格提案の承認)--> retired
 
 retired はプロファイルに残す(削除しない)。review 時に参照されないが、
 同じルールが再抽出されたときの重複検出に使う。
-自動遷移は一切行わない。evaluate は降格・昇格の**提案**のみ出す(§7.4)。
+自動昇格は同一の fuzzy-matched text の反復だけを根拠にする。preference rule
+同士の意味的な反対関係は検出しない。negative pattern と positive example の
+同一パターン衝突は `contradicts_established_rule` で候補側にフラグを付けるが、
+候補を approve しても反対側の active entry は自動 retire されない。置換する
+場合は既存 entry に `rules retire` を別途実行する。
 
 ### 3.2 RuleProposalSet(ルール抽出の出力)
 
@@ -218,7 +234,13 @@ violated_rule_id: str = ""  # 違反した PreferenceRule / PatternEntry の id(
 DecisionRecord に engine が保存されるため、後から「LLM レビューと heuristic レビューで
 delta の傾向がどう違うか」を JSONL から分析できる。
 
-### 3.5 決定履歴の Source of Truth 一本化
+### 3.5 決定履歴の Source of Truth 一本化（未実装の設計案）
+
+> **現在の実装:** `DecisionProfile.decision_records` は残っており、`learn` /
+> `iterate` は新しい record をプロファイルへ埋め込んで保存する。`--records`
+> 指定時は同じ record を JSONL にも追記するため、二重永続化である。
+> `migrate-history` は実行時点の埋め込み履歴を空にするが、後続の学習で再び
+> 埋め込まれる。以下は JSONL を唯一の Source of Truth にする将来設計である。
 
 **現状の問題:** 仕様書(設計原則 4)は「プロファイルは編集可能な要約、JSONL は
 append-only の生の証拠」と定めているが、現行実装はこれに反する。
@@ -345,7 +367,7 @@ class DecisionProfile:
 
 ## 5. LLMReviewEngine の設計
 
-**この節は実装されていない。実際の `LLMReviewEngine` は、本節が前提とする
+**§5.1〜§5.5 は実装されていない歴史的案である。実際の `LLMReviewEngine` は、本節が前提とする
 `anthropic` Python SDK 直接呼び出しではなく、常時起動の local-agent-gateway
 (Codex App Server をラップするローカル HTTP API) への委譲として実装された
 (`src/decision_agent/engines/llm.py`)。レビューは `outputSchema` 付きの
@@ -358,7 +380,7 @@ pip 依存ゼロを維持する。
 (経緯: 本節の SDK 案 → claude CLI サブプロセス案(短期間実装) → gateway 委譲、
 の順に置き換えられた。) 以降の §5.1〜§5.5 は当初案の記録として残すが、
 現状のコードとは一致しない。詳細は `decision-agent-spec.md` の
-"Still incomplete"(LLM-backed review, resolved の注記)を参照。**
+"Current Implementation Status" を参照。**
 
 ### 5.1 モデルとパラメータ
 
@@ -482,6 +504,8 @@ decision-agent rules retire  profiles/default.json <rule-id> [--output ...]
 
 - `list` は id / status / source / hit・miss / text を表形式(または `--json`)で出す。
 - `approve` は candidate → active。`reject` は candidate をプロファイルから削除。
+- 反対 polarity の pattern candidate を `approve` しても、既存の反対 entry は
+  active のまま残る。置換する場合は既存 entry を別途 `retire` する。
 - 対話プロンプトは実装しない(スクリプタブルに保つ。対話はチャット層の仕事)。
 
 ### 6.4 known_mistakes の扱い
@@ -694,25 +718,27 @@ Decision Agent 側は「レビュー結果を生成エージェントに返す�
 
 ## 9. CLI 変更一覧
 
+### 9.1 実装済み CLI
+
 ```text
-review   <profile> <request> [--records F] [--engine {heuristic,llm}] [--model M] [--verbose]
-learn    <profile> <request> <review> <feedback> --output F [--records F]
-         [--engine ...] [--propose-rules]
+review   <profile> <request> [--records F] [--engine {heuristic,llm}]
+learn    <profile> <request> <review> <feedback> --output F
+         [--records F] [--engine {heuristic,llm}]
 iterate  <profile> <request> --feedback F --records F --output F
-         [--engine ...] [--propose-rules]
-evaluate <profile> <cases> [--records F] [--engine ...] [--model M]
-         [--apply-stats --output F] [--history F] [--strict]
-rules    {list,approve,reject,retire} <profile> [<rule-id>] [--output F] [--json]
+         [--engine {heuristic,llm}]
+evaluate <profile> <cases> [--records F] [--engine {heuristic,llm}]
+rules list <profile> [--status {active,candidate,retired}] [--json]
+rules {approve,reject,retire} <profile> <rule-id> [--output F]
 migrate-history <old-profile> --records F [--output F]
 decide / train   # 既存のまま(凍結)
 ```
 
 - `--engine` 既定は `heuristic`。環境変数 `DECISION_AGENT_ENGINE` でも指定可
   (CLI フラグが優先)。
-- `--model` 既定は `claude-opus-4-8`。
-- `evaluate --history F` は §7.6 の `EvaluationRun` を追記し、直前の同一
-  `cases_fingerprint`・同一 `engine` の run との差分をレポートに含める。
-  `--strict` は評価ケースの `id` 欠落をエラーにする(§7.6)。
+- `learn` は既に作成済みの review を記録するだけなので Gateway を呼ばない。
+  `--engine` は値の検証にのみ使う。
+- `evaluate --engine llm` はケースのレビュー生成に LLM を使うが、
+  一致判定は現在も heuristic `AgreementJudge` を使う。
 - `rules approve/reject/retire` で `--output` 省略時は入力プロファイルを上書きする
   (この 3 コマンドは編集が目的なので in-place を既定とする)。
 - `migrate-history` は §3.5 の一回限りの移行コマンド。旧プロファイル内の
@@ -725,96 +751,87 @@ decide / train   # 既存のまま(凍結)
   これは rules コマンドに限らず `save_profile` 全経路に適用する。
   `learn` / `iterate` は §3.5 の書き込み順序(JSONL 追記 → プロファイル保存)を守る。
 
+### 9.2 未実装の設計案
+
+`--model`、`--verbose`、`--propose-rules`、`evaluate --history`、
+`--apply-stats`、`--strict` は現行 CLI に存在しない。モデル選択は Gateway 側の
+ポリシーに移管したため `--model` は追加しない。その他は対応する機能を実装する
+場合に、改めて CLI 契約を確定する。
+
 ## 10. テスト戦略
 
-1. **既存テストは無変更で通す。** `engines/heuristic.py` への移動自体はリファクタリングで
-   挙動を変えない。ただし Phase 1 内の §3.5(履歴一本化)・§3.6(task_types)・
-   §7.5(n-gram 化)は意図的な破壊的変更なので、これらに対応する既存テストは
-   同じ Phase 1 内で更新する(「既存テストが無変更で通る」のはこれらの変更を
-   除いた範囲)。
-2. **決定履歴一本化のテスト(§3.5)。** `learn` が `(profile, record)` を返すこと、
-   `profile` に `decision_records` が含まれないこと、`--records` 未指定で
-   `learn` を呼んでも例外にならず単に永続化されないこと、`migrate-history` が
-   旧プロファイルの履歴を過不足なく JSONL へ移し替えることを検証する。
-3. **評価履歴のテスト(§7.6)。** 同一 `cases_fingerprint` の 2 回目の
-   `evaluate --history` 実行で `delta_vs_previous` が計算されること、
-   `cases_fingerprint` が異なる run とは比較されないこと(`null` になること)、
-   ケース `id` 欠落が `--strict` でエラーになることを検証する。
-4. **LLM エンジンは Fake で単体テスト。** `engines/llm.py` はクライアントを
-   コンストラクタ注入(`client: anthropic.Anthropic | None = None`)にし、
-   テストでは `messages.parse` を模した Fake を渡す。ネットワークを叩くテストは書かない。
-   - parse 失敗 → 1 リトライ → 失敗、の分岐
-   - LLMReviewOutput → ArtifactReview 変換(violated_rule_id → learned_signals)
-   - max_tokens 切り詰めの拒否
-5. **rendering.py の決定性テスト。** 同一プロファイルを 2 回レンダリングして
-   バイト一致、dict 順序をシャッフルした等価プロファイルでもバイト一致、を検証する
-   (キャッシュ有効性の回帰テスト)。
-6. **後方互換テスト。** 文字列形式ルールの旧プロファイル / `engine` フィールドの無い
-   旧 DecisionRecord を読み、書き出すと新形式になることを検証する。
-   旧プロファイルを 2 回 load して同一のルール ID が採番されること
-   (内容ハッシュ由来の決定性)も検証する。
-7. **原子的書き込みテスト。** `save_profile` が一時ファイル経由で書くこと、
-   書き込み先に部分的な JSON が残らないことを検証する。
-8. **rules CLI のテスト。** candidate → approve → active、reject → 削除、を
-   一時ファイルで検証する。
-9. **手動スモーク(CI 外)。** `ANTHROPIC_API_KEY` がある環境でのみ
-   `examples/` に対する `review --engine llm` を実行する手順を README に記載する。
+現在の自動テストは `tests/test_agent.py` に集約し、次を回帰対象とする。
+
+1. heuristic レビューの決定性、日本語／混在テキストの文字 n-gram 照合、
+   関連履歴の選別。
+2. JSONL 履歴の追記と重複抑止、旧プロファイル履歴の移行、不正な評価ケースの
+   fail-fast。
+3. candidate の反復昇格、active ルールとの矛盾、approve/reject/retire、
+   hit/miss と disagreement flag。
+4. `learn` / `iterate` の非対話性、原子的なプロファイル保存、旧形式データの
+   後方互換。
+5. Gateway HTTP を Fake 注入した LLM エンジン単体テスト。inference/coding
+   endpoint の選択、idempotency、polling、timeout/cancel、認証・タスク失敗、
+   `structuredOutput` の検証を含み、通常のテストでは実ネットワークを使わない。
+
+標準の検証コマンド:
+
+```bash
+PYTHONPATH=src python -m unittest discover -s tests
+uv run pyright
+```
+
+実 Gateway のスモークテストは CI 外で行う。Gateway の `/readyz`、owner token、
+専用 `CODEX_HOME` の認証を確認後、README の `review --engine llm` 例を実行する。
 
 ## 11. 実装フェーズ分割
 
-各フェーズは独立してマージ可能で、常に全テストが通る状態を保つ。
+当初の Phase 1〜3 のうち、次は実装済みである。
 
-### Phase 1: リファクタリングと抽象化(依存追加なし)
+- engine 抽象化と heuristic ロジックの分離
+- JSONL 履歴の追記・移行と原子的保存（プロファイル埋め込み履歴との二重永続化は残る）
+- 構造化ルール、候補昇格、矛盾フラグ、rules CLI
+- 日本語／混在テキストの文字 n-gram 照合
+- Gateway V2 inference API を使う LLM レビュー
 
-1. `engines/` パッケージ作成、Protocol 定義
-2. 既存レビューロジックを `engines/heuristic.py` へ移設、`DecisionAgent` を委譲構造に変更
-3. 文字 n-gram によるテキスト一致判定への置き換え(§7.5)、日本語ケースでの閾値再調整
-4. `decision_records` をプロファイルから削除し JSONL に一本化(§3.5)、
-   `DecisionAgent.learn` の戻り値を `(profile, record)` に変更、
-   `review`/`evaluate` の `history_records` を必須引数化、`migrate-history` コマンド追加
-5. `task_types` をプロファイルへ移し `SUPPORTED_TASK_TYPES` ハードコードを廃止(§3.6)
-6. CLI に `--engine` を追加(heuristic のみ受理)
-7. 既存テスト全通過を確認(§3.5/§3.6 の変更は破壊的なので、旧プロファイル・
-   旧 CLI 呼び出しの後方互換テストをこの段階で追加する)
+当初案から変更した点:
 
-### Phase 2: データモデル拡張
+- LLM は Anthropic SDK 直接呼び出しではなく local-agent-gateway に委譲した。
+- `[llm]` extra、`prompts.py`、`rendering.py`、`--model` は導入していない。
+- 評価履歴、LLM AgreementJudge、自由記述からの LLM ルール抽出は未実装。
 
-1. `PreferenceRule` / `PatternEntry` 構造化、`schema_version`、後方互換ロード
-2. `ArtifactReview.engine` フィールド
-3. `rules list/approve/reject/retire` コマンド
-4. `evaluate --history` による `EvaluationRun` 記録、`delta_vs_previous`、
-   `--strict` でのケース ID 欠落検出(§7.6)
-5. 互換テスト・rules テスト追加
+次の実装単位は、実データで優先度を確認してから独立に進める。
 
-### Phase 3: LLM レビュー(G1)
-
-1. `pyproject.toml` に `[llm]` extra 追加
-2. `rendering.py`(決定的レンダリング)+ 決定性テスト
-3. `prompts.py`(レビュープロンプト)
-4. `engines/llm.py` の `LLMReviewEngine`(structured outputs / caching / エラー処理)
-5. Fake クライアントによる単体テスト、README 更新
-
-### Phase 4: ルール抽出(G2)+ セマンティック評価(G3, G5)
-
-1. `RuleProposal` モデル、`FeedbackExtractor` の LLM 実装、`--propose-rules`
-2. `AgreementJudge` の LLM 実装、`evaluate --engine llm`
-3. `agreement_evidence` の保存、`--apply-stats`
-4. operation-guide.md に Revise ループ例(§8)と新しい運用リズムを追記
+1. 自由記述フィードバックからの candidate ルール提案。
+2. semantic AgreementJudge と、heuristic 評価との指標分離。
+3. 評価履歴と同一ケース集合に対する時系列差分。
+4. 生成エージェントとの revise-loop オーケストレーション。
 
 ### 見送り(将来課題として明記)
 
 - 埋め込みベースの履歴検索(JSONL が数千件を超えたら再検討)
 - 評価ケースの自動生成
-- ルールの自動昇格(実績データが十分溜まってから設計する)
 
 ## 12. 設計判断の記録(ADR 要約)
+
+### 12.1 現在採用している判断
 
 | 判断 | 理由 |
 |------|------|
 | 既定エンジンを heuristic のままにする | 「API キー不要で動く」という現在の性質を破壊しない。LLM はオプトイン |
 | LLM 失敗時に heuristic へ自動フォールバックしない | レビュー品質の性質が黙って変わると、JSONL に混在した記録の解釈が壊れる |
-| ルール抽出は candidate 止まり、承認必須 | 仕様の「suggested updates are proposals, not automatic truth」の一貫適用 |
-| evaluate の LLM ジャッジは review と同一モデル | 評価数値がシステムの改善判断の根幹であり、判定品質を落とすと全体が狂う |
-| evaluate は直列実行 | プロファイルキャッシュを 2 件目以降に確実に効かせるため |
-| Pydantic モデルを models.py に持ち込まない | コアのデータモデルを依存ゼロに保つ。LLM 層の境界で変換する |
+| LLM transport を Gateway に委譲する | 認証・ポリシー・監査・provider/model 選択を Decision Agent から分離し、Python 依存ゼロを保つ |
+| 明示フィードバック由来の candidate を反復で自動昇格する | 同一パターンが別レコードで 2 回以上現れたことを、active 化の最小証拠とする |
+| 矛盾検出を限定的に扱う | known-mistake の verdict 競合と positive/negative の同一パターンだけを検出する。preference rule 間の意味的矛盾は未検出 |
+| evaluate の一致判定は heuristic のままにする | LLM ReviewEngine を選んでも、現行の AgreementJudge は決定的な heuristic 実装だけである |
 | rules コマンドは非対話 | スクリプタブルに保つ。対話 UI は将来のチャット層の責務 |
+
+### 12.2 将来案・不採用案
+
+- 自由記述からの LLM ルール抽出を実装する場合、抽出結果は candidate とし、
+  自動採用しない。
+- semantic AgreementJudge は将来案であり、導入時には heuristic 評価と指標を
+  混在させない。
+- Anthropic SDK 直接呼び出し、Pydantic 出力モデル、Decision Agent 側の prompt
+  caching と直列 evaluate は不採用になった歴史的案である。現行の Gateway 実装の
+  要件ではない。

@@ -177,9 +177,12 @@ PYTHONPATH=src python -m decision_agent.cli migrate-history \
   --records records/blog_outline.jsonl
 ```
 
-The migration path reads raw `decision_records` from old profile JSON before the
-normal profile model drops embedded history, and JSONL appends skip duplicate
-logical records so reruns are safe.
+The migration path reads raw `decision_records` from profile JSON, appends them
+to JSONL, and saves that profile with an empty embedded history. JSONL appends
+skip duplicate logical records so reruns are safe. The current profile model
+still supports and serializes embedded history, so a later `learn` or `iterate`
+can add new records to the profile again; JSONL is not yet the sole source of
+truth.
 
 Review with past records:
 
@@ -233,9 +236,14 @@ partially written profile JSON.
 
 See [docs/operation-guide.md](docs/operation-guide.md) for the intended operating
 loop: review, capture user judgment, iterate, evaluate, then update the profile
-only with rules the user agrees with. The implementation roadmap toward
-LLM-backed review, rule extraction, and semantic evaluation is defined in
-[docs/detailed-design.md](docs/detailed-design.md).
+through recurring feedback. Candidate entries promote automatically after enough
+distinct same-pattern occurrences. Opposite positive/negative patterns and
+conflicting known-mistake verdicts are flagged for manual review; approving an
+opposite-pattern candidate does not retire the established entry, so retire that
+entry separately when replacing it. The implemented architecture and the
+remaining roadmap for rule extraction and semantic evaluation are described in
+[docs/detailed-design.md](docs/detailed-design.md). Historical alternatives in
+that document are explicitly marked as such.
 
 ## Option Ranking
 

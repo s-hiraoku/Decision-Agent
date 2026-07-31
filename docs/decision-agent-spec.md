@@ -483,6 +483,10 @@ Implemented first steps:
   `DecisionRecord` models
 - review engine abstraction with the deterministic `heuristic` engine as the
   current default
+- `llm` review engine delegated to local-agent-gateway through a read-only V2
+  inference run with `outputSchema`; the returned `structuredOutput` is
+  converted to `ArtifactReview`. An optional repository setting selects the
+  older read-only coding-run path for compatibility
 - natural-language preference rules, negative patterns, and positive examples on
   the profile, stored as structured entries with stable IDs and lifecycle status
 - known mistakes promoted from verdict deltas
@@ -499,56 +503,28 @@ Implemented first steps:
 - `rules list/approve/reject/retire` CLI behavior for non-interactive rule
   lifecycle management
 - atomic profile writes through temp-file replacement
+- candidate entries that promote after the same fuzzy-matched pattern recurs
+  across at least two distinct records. Preference rules do not currently
+  detect semantically opposing rules expressed as different text
+- opposite positive/negative patterns flagged as
+  `contradicts_established_rule`; approving the candidate activates it but does
+  not retire the established opposite entry, which must be retired separately
+- established known-mistake verdict conflicts flagged as
+  `contradicts_established_rule`, with `rules approve` / `rules reject` used to
+  keep the established correction or accept the pending correction
+- informational `low_confidence_disagreement` annotations on decision records;
+  recording and candidate promotion continue without manual resolution
+- hit/miss and `last_used_at` updates for rules cited by review issues
 
 Still incomplete:
 
 - orchestration around generator agents before the review step
-- LLM-backed review over richer natural-language criteria -- **resolved**:
-  `--engine llm` delegates every LLM query to local-agent-gateway (the
-  user's always-on local HTTP gateway wrapping Codex App Server), sending
-  the review prompt as an atomic read-only V2 inference run with an
-  `outputSchema` and converting the returned `structuredOutput` into the
-  domain `ArtifactReview`. Setting `DECISION_AGENT_GATEWAY_REPO` opts into a
-  read-only coding run for compatibility with a Gateway that predates the
-  inference endpoint. This is covered by the Gateway V2 HTTP and App Server
-  protocol integration tests; deployment still requires a dedicated ChatGPT
-  login.
-  This supersedes two earlier designs, both deliberately abandoned:
-  `docs/detailed-design.md`'s §5 (direct `anthropic` Python SDK with prompt
-  caching -- never built) and a short-lived claude-CLI-subprocess engine
-  (built, shipped, then replaced within days once the gateway direction was
-  settled; nothing was in production use). The governing decision:
-  Decision Agent's responsibility is judgment modeling, not LLM transport --
-  auth, policy, audit, provider and model selection all live in the
-  gateway's provider registry, so Decision Agent needs no changes when
-  providers are added there. The engine uses only the Python standard
-  library (urllib), preserving the zero-pip-dependency property
 - stronger extraction of durable preference rules from free-form feedback
 - stronger semantic matching for evaluation beyond heuristic text similarity
 - deeper optimization for user-aligned judgment, not only numeric scoring
-- the Philosophy section's promotion principle (recurrence across distinct
-  records, without contradiction, before a rule is trusted) is not yet
-  implemented: today a single verdict mismatch immediately creates a
-  `KnownMistake`, and new preference rules/patterns default to `active`
-  status rather than `candidate` -- **resolved**: new entries now start as
-  `candidate` and promote to `active` only once the same fuzzy-matched
-  pattern recurs across at least 2 distinct source records without
-  contradiction; status transitions beyond that remain manual
-  (`rules approve`/`reject`/`retire`)
-- `hit_count`/`miss_count` fields exist on rules but are not yet
-  incremented or read by any review or learning logic -- **resolved**:
-  `learn` now increments hit/miss and `last_used_at` for rules the engine
-  cited as `violated_rule_id` in that review, based on whether the user's
-  verdict agreed (hit) or accepted anyway (miss, a false positive). This
-  only covers rules that caused an issue; a preference rule or positive
-  example an artifact satisfied is not yet credited, since `ArtifactReview`
-  does not structurally surface satisfied-but-not-issued rules today
-- the Philosophy section's confidence-bearing disagreement -- **resolved**:
-  see "An opinion, not an echo" for the implemented `flagged_reason`
-  mechanism (`contradicts_established_rule` withholds effect and is
-  resolved via `rules approve`/`reject`; `low_confidence_disagreement` is
-  promote-but-annotate). The confidence threshold used for the low-
-  confidence trigger is an uncalibrated placeholder pending real usage data
+- credit for satisfied preference rules or positive examples; current hit/miss
+  updates cover only rules surfaced as review issues
+- calibrated confidence thresholds based on real usage data
 - retrieval-stability guarantees beyond the deliberate recency tie-break in
   `_relevant_records` are out of scope for the MVP; there is a same-input
   determinism test as a regression guard, but no vector index, embedding
