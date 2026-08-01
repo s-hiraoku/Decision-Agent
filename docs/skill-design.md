@@ -335,6 +335,15 @@ record fields, and `error: {"code":"moved","message":"moved",
 scope's non-sensitive current generation. This envelope applies both to an
 operation marker and to a proposal-consumption marker.
 
+A stale control replay is exactly `ok: false`, top-level `replayed: true`, no
+`result` or `affected_scopes`, and `error: {"code":"stale_control",
+"message":"stale control operation","retryable":false}`; it exits 3. For a
+stale `pause` or `resume`, it includes the envelope `scope`, its current
+`generation`, and `control: {"paused": true-or-false}`. For a replayed scope
+move whose records have since moved again, `control` instead contains only their
+non-sensitive `current_scope` and current `generation`. A caller must issue a
+new control operation with a new operation ID and freshly read generations.
+
 The existing `decision-agent decide <profile> <request>` and `train` commands
 remain the frozen numeric MVP and keep their positional-file contract. The
 published Skill uses only `agent-v1`; a future incompatible agent contract gets
@@ -381,8 +390,8 @@ caller's expected generation and perform a compare-and-set under the write
 barrier. Their responses always include the current state and generation.
 Replaying either control operation re-reads that state: it returns the original
 success only while its resulting generation is still current; otherwise it
-returns `stale: true` with non-sensitive current control metadata and never
-claims that the old state is active.
+returns the exact `stale_control` envelope above and never claims that the old
+state is active.
 
 `memory scope` moves records; it does not change a client default, copy records,
 or change unrelated records. Every root must belong to the envelope scope and
@@ -506,9 +515,10 @@ Do not publish the Skill until:
 - scoped pause concurrency tests prove no memory is stored, retrieved, or
   applied after pause succeeds and before resume succeeds, including reads that
   began before pause;
-- pause and resume replay tests prove stale operations report the current scope
-  generation, ordinary cached mutation results stay hidden while paused, and
-  paused list tests expose only non-sensitive control metadata;
+- pause and resume replay tests require the exact `stale_control` envelope and
+  current scope generation, prove ordinary cached mutation results stay hidden
+  while paused, and prove paused list exposes only non-sensitive control
+  metadata;
 - sensitive-data filtering and hard-deletion tests prove rejected or forgotten
   content and all dependent or derived content are absent from retrieval, every
   returned field is scope-checked and filtered, rejected decision inputs never
