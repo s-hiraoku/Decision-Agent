@@ -103,7 +103,10 @@ If the reason is missing and material to reuse, ask one natural follow-up. Link
 the correction to the original decision and report the narrow future behavior
 that changed. Keep unexplained corrections unresolved rather than inventing a
 reason. A pure rejection may leave both the replacement choice and reason
-unknown; store it as unresolved rather than requiring either value. When the
+unknown; store it as unresolved rather than requiring either value. It also
+creates one active rejection Signal limited to the exact recorded decision
+context and rejected option, so the next comparable decision can avoid simply
+repeating that option without inventing a reason or a reusable Policy. When the
 user rejects an unlogged `decide` proposal, submit the returned
 proposal ID and proposal fields with `correct`; after the shared filter passes,
 that one mutation atomically creates a `Decision` with `rejected` status and its
@@ -336,7 +339,15 @@ Command-specific `input` fields are:
   selection, actor, status, rationale, or evidence. The first non-null corrected choice also atomically creates
   one linked, active, narrowly scoped choice Signal whose provenance is the
   Correction ID; it records the explicit choice without inventing a reason, and
-  idempotent resolution never duplicates it. At least one of `reason` or
+  idempotent resolution never duplicates it. When both correction fields are
+  null on a newly created Decision- or proposal-based Correction, the same
+  mutation instead creates one linked, active, exact-context rejection Signal.
+  Its match key is the Correction's scope, Decision context, rejected selected
+  option, ordered alternatives, and constraints; it may suppress that option
+  only when all of those fields match and cannot support a Policy without a
+  later reason. The Signal remains linked when that exact Correction is later
+  resolved, and idempotent creation or resolution never duplicates it. At least
+  one of `reason` or
   `corrected_choice` is required with `correction_id`; only `applied` is terminal
   and cannot be resolved again. Once a Correction has a non-null corrected
   choice, later resolution may omit it or repeat the same ID but cannot replace
@@ -695,9 +706,11 @@ Do not publish the Skill until:
   record-ID permutations, duplicates, and semantic arrays or fields to
   distinguish replay, validation failure, and conflict;
 - immediate proposal rejection atomically creates one rejected Decision and one
-  linked Correction, and concurrent proposal consumption by `log` or `correct`
-  creates no duplicate Decision across different operation IDs or after its
-  terminal proposal marker is forgotten;
+  linked Correction; a pure rejection also creates exactly one linked active
+  exact-context rejection Signal that affects a fully matching next decision
+  without creating a Policy, and concurrent proposal consumption by `log` or
+  `correct` creates no duplicate Decision across different operation IDs or
+  after its terminal proposal marker is forgotten;
 - proposal-backed log rejects a selected/recommended mismatch without consuming
   the proposal, while proposal-based correct records the rejected recommendation
   with a fixed agent actor and never attributes its rationale to the user;
@@ -712,6 +725,11 @@ Do not publish the Skill until:
   in the next comparable decision, never invent a reason or broad Policy,
   reject later choice replacement, retain a supplied new alternative on the
   Correction, and never rewrite the original Decision;
+- pure-rejection tests for Decision- and proposal-based corrections create one
+  linked active rejection Signal, match scope, context, rejected option,
+  ordered alternatives, and constraints exactly, avoid the rejected option on
+  a matching next decision, do not affect near-miss contexts, never infer a
+  reason or Policy, and never duplicate the Signal on retry or later resolution;
 - correction target tests reject foreign Decision, Correction, and proposal IDs
   before engine use or mutation while accepting same-scope global targets;
 - outcome tests create a Decision-linked outcome Signal atomically and prove
