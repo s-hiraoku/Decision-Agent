@@ -151,22 +151,25 @@ caller-generated `operation_id` (UUID) that is stable across retries of one
 logical operation. The idempotency identity is `(scope, command, operation_id)`:
 
 - the same identity and canonical request payload returns the original result
-  with `replayed: true` and creates no additional record; if the target was
-  forgotten, replay returns only a terminal `forgotten: true` result;
+  with `replayed: true` and creates no additional record;
 - the same identity with a different canonical payload returns a conflict and
-  performs no mutation;
+  performs no mutation while the original record exists;
+- after forgetting, the terminal `forgotten: true` result takes precedence for
+  that identity regardless of the retry payload, because no payload verifier is
+  retained; it performs no mutation and reveals no original result fields;
 - a timeout is retried with the same `operation_id`; a new logical observation,
   decision, or correction always receives a new one;
-- the operation ID, payload digest, and result identity are retained for at
-  least as long as the mutation. After forgetting, a non-sensitive replay marker
-  remains so a delayed retry cannot recreate deleted memory.
+- the operation ID, payload digest, and result identity are retained while the
+  mutation record exists. After forgetting, only the operation ID and a non-
+  sensitive terminal replay marker remain so a delayed retry cannot recreate
+  deleted memory.
 
 The target models are:
 
 - `Signal`: kind, summary, provenance, scope, confidence, status, timestamps;
 - `Policy`: text, scope, supporting and contradicting signal IDs, status;
-- `Decision`: context, alternatives, selected option, actor, status, rationale,
-  evidence IDs, confidence;
+- `Decision`: context, alternatives, selected option, actor, scope, status,
+  rationale, evidence IDs, confidence;
 - `Correction`: decision ID, corrected choice, nullable reason, scope, status
   (`unresolved`, `explained`, or `applied`), resulting changes.
 
@@ -201,7 +204,8 @@ Do not publish the Skill until:
 - JSONL/profile dual history persistence is resolved;
 - concurrent mutation and retry tests pass;
 - timed-out mutation retries deduplicate by `operation_id`, payload conflicts
-  fail closed, and retries after forgetting do not recreate memory;
+  fail closed before forgetting, and any reuse of a forgotten operation identity
+  returns only the terminal marker without recreating memory;
 - sensitive-data filtering and hard-deletion tests prove rejected or forgotten
   content and all dependent or derived content are absent from retrieval and
   exports, rejected decision inputs never reach an engine, and forgotten
