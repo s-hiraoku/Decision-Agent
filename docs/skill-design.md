@@ -309,10 +309,14 @@ UUID, and no scope metadata. Stable codes are
 `stale_cursor`, `stale_control`, and `runtime_unavailable`.
 Validation and contract errors exit 2; state, idempotency, pause, scope, and
 generation conflicts exit 3; privacy rejection exits 4; missing or forgotten
-targets exit 5; runtime failure exits 6. Success, including safe replay, exits
-0. Diagnostics go to stderr; failures never emit a partial success or mutation.
-A conflict response returns only non-sensitive identity and current control
-metadata, never either payload.
+targets exit 5; runtime failure exits 6. Success, including an ordinary safe
+replay of an existing mutation, exits 0. A terminal replay after forgetting is
+exactly `ok: false`, top-level `replayed: true`, no `result` or
+`affected_scopes`, and `error: {"code":"forgotten","message":"forgotten",
+"retryable":false}`; it exits 5 and may include only the envelope scope's non-
+sensitive current generation. Diagnostics go to stderr; failures never emit a
+partial success or mutation. A conflict response returns only non-sensitive
+identity and current control metadata, never either payload.
 
 The existing `decision-agent decide <profile> <request>` and `train` commands
 remain the frozen numeric MVP and keep their positional-file contract. The
@@ -379,6 +383,13 @@ therefore cannot recreate the record, and an unrelated target-scope operation
 with the same UUID cannot collide. If the server cannot resolve a complete,
 consistent closure, it returns `scope_dependency_conflict` with non-sensitive
 missing record IDs and moves nothing.
+
+A valid global evidence reference is an external dependency, not a member of a
+project move closure. The server stops traversal at that edge, acquires the
+global shared lease, and revalidates the evidence through commit, but never
+moves the global record or traverses its reverse dependents. Evidence from any
+other project is invalid for the target effective scope and fails with
+`scope_dependency_conflict` before mutation.
 
 For a moved proposal-backed Decision, the same transaction leaves a non-
 sensitive `moved: true` proposal marker in the source scope and creates the live
@@ -458,7 +469,7 @@ Do not publish the Skill until:
 - concurrent mutation and retry tests pass;
 - timed-out mutation retries deduplicate by `operation_id`, payload conflicts
   fail closed before forgetting, and any reuse of a forgotten operation identity
-  returns only the terminal marker without recreating memory;
+  returns the exact terminal error envelope without recreating memory;
 - idempotency canonicalization tests vary request IDs, member order, whitespace,
   record-ID permutations, duplicates, and semantic arrays or fields to
   distinguish replay, validation failure, and conflict;
@@ -485,6 +496,8 @@ Do not publish the Skill until:
   move atomically, including closures over 100 records; source replay markers
   prevent delayed recreation, target UUID and proposal collisions fail before
   mutation, and proposal mappings cannot recreate or expose moved Decisions;
+- scope closure tests prove global evidence is locked and revalidated but never
+  moved or traversed, and foreign-project evidence fails before mutation;
 - multi-scope response tests require complete, canonical `affected_scopes`, and
   scope replay tests cover unchanged targets, later moves, and forgetting;
 - effective-scope tests cover project-plus-global reads, paused-scope exclusion,
