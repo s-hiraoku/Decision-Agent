@@ -89,8 +89,11 @@ an agent decision from a user-confirmed decision.
 ### Log
 
 After confirmation or execution, record the selected alternative, status,
-explainable rationale, and the signal or policy IDs used. Never persist hidden
-chain-of-thought.
+explainable rationale, and the signal or policy IDs used. When logging a
+`decide` result, submit its proposal ID and complete filtered proposal fields so
+the mutation can validate the selected option and persist context and
+alternatives without reconstructing conversation. Never persist hidden chain-of-
+thought.
 
 ### Correct and learn
 
@@ -102,15 +105,15 @@ that changed. Keep unexplained corrections unresolved rather than inventing a
 reason. When the user rejects an unlogged `decide` proposal, submit the returned
 proposal ID and proposal fields with `correct`; after the shared filter passes,
 that one mutation atomically creates a `Decision` with `rejected` status and its
-linked `Correction`, plus a unique proposal-consumption mapping. Concurrent
-`correct` calls for the same proposal serialize on that proposal ID: an
-identical filtered correction returns the existing pair, while a different
-payload conflicts and must target the resulting Decision ID as a later,
-separate correction. A retry replays both records under the same `operation_id`
-or creates neither. If that Decision is forgotten, replace the consumption
-mapping with a non-sensitive terminal marker keyed by proposal ID. Every later
-`correct` for that proposal returns only `forgotten: true`, regardless of
-operation ID or supplied proposal fields, and cannot recreate the pair.
+linked `Correction`, plus a unique proposal-consumption mapping shared with
+`log`. Concurrent `log` or `correct` calls for the same proposal serialize on
+that proposal ID: an identical filtered mutation returns the existing result,
+while a different payload conflicts and must target the resulting Decision ID
+as a later, separate correction. A retry replays all created records under the
+same `operation_id` or creates none. If that Decision is forgotten, replace the
+consumption mapping with a non-sensitive terminal marker keyed by proposal ID.
+Every later `log` or `correct` for that proposal returns only `forgotten: true`,
+regardless of operation ID or supplied proposal fields, and cannot recreate it.
 
 ### Inspect and forget
 
@@ -199,13 +202,14 @@ exactly one JSON object to stdout. The common request envelope is:
 except for `doctor`; global scope is `{"kind":"global","id":"user"}`.
 `operation_id` is required only for `observe`, `log`, `correct`, and memory
 `pause`, `resume`, `scope`, or `forget`. `expected_generation` is required for
-those memory controls and omitted elsewhere. Unknown fields or enum values fail
-validation. UUIDs use canonical RFC 4122 text, generations are unsigned 64-bit
-integers, opaque IDs are 1–256 UTF-8 bytes, each free-text field is at most 16
-KiB, arrays contain at most 100 items, and the complete request is at most 256
-KiB. Confidence is a JSON number from 0 through 1. Except where marked optional
-or nullable below, every listed field is required and additional input fields
-are rejected.
+pause and resume; `scope` instead requires source `expected_generation` plus
+input `target_expected_generation`; forget omits it. Unknown fields or enum
+values fail validation. UUIDs use canonical RFC 4122 text, generations are
+unsigned 64-bit integers, opaque IDs are 1–256 UTF-8 bytes, each free-text field
+is at most 16 KiB, arrays contain at most 100 items, and the complete request is
+at most 256 KiB. Confidence is a JSON number from 0 through 1. Except where
+marked optional or nullable below, every listed field is required and additional
+input fields are rejected.
 
 Command-specific `input` fields are:
 
@@ -215,15 +219,19 @@ Command-specific `input` fields are:
 - `decide`: `context`, two or more `alternatives` (`id`, `label`, optional
   `details`), and optional `constraints` string array;
 - `log`: `selected_option`, `actor` (`user` or `agent`), `status` (`confirmed`,
-  `executed`, or `rejected`), `rationale`, and `evidence_ids` string array;
+  `executed`, or `rejected`), `rationale`, `evidence_ids` string array, and
+  either a complete `proposal` object or both `context` and `alternatives`; a
+  proposal has the same fields defined for `correct`, and the two forms are
+  mutually exclusive;
 - `correct`: nullable `decision_id`, nullable `proposal` (`proposal_id`,
   `context`, `alternatives`, `recommended_option`, `rationale`, `evidence_ids`),
   `corrected_choice`, and nullable `reason`; exactly one of `decision_id` or
   `proposal` is required;
 - `explain`: `target_type` (`decision` or `policy`) and `target_id`;
 - `memory`: `action` (`list`, `pause`, `resume`, `scope`, or `forget`); `forget`
-  also requires a non-empty `record_ids` string array, while `scope` requires
-  `target_scope`; list, pause, and resume take no other fields;
+  requires a non-empty `record_ids` string array; `scope` requires `record_ids`,
+  `target_scope`, and `target_expected_generation`; list, pause, and resume take
+  no other fields;
 - `doctor`: no fields.
 
 Successful responses use this envelope:
@@ -246,16 +254,21 @@ recommendation, and evidence IDs; `explain` and list return filtered records;
 memory controls return current state and generation. Replays set `replayed` and
 obey the pause, forget, and generation rules below.
 
-Errors use the same `contract`, `request_id`, and applicable scope metadata with
-`ok: false` and `error: {"code", "message", "retryable"}`. Stable codes are
+Errors after envelope validation use the same `contract`, `request_id`, and
+applicable scope metadata with `ok: false` and
+`error: {"code", "message", "retryable"}`. For malformed JSON or an invalid or
+missing common field, the server still emits one JSON error with
+`contract: "agent-v1"`, `request_id: null` unless the supplied value is a valid
+UUID, and no scope metadata. Stable codes are
 `invalid_request`, `unsupported_contract`, `sensitive_rejected`, `paused`,
 `not_found`, `forgotten`, `operation_conflict`, `generation_conflict`,
-`stale_control`, and `runtime_unavailable`. Validation and contract errors exit
-2; state, idempotency, pause, and generation conflicts exit 3; privacy rejection
-exits 4; missing or forgotten targets exit 5; runtime failure exits 6. Success,
-including safe replay, exits 0. Diagnostics go to stderr; failures never emit a
-partial success or mutation. A conflict response returns only non-sensitive
-identity and current control metadata, never either payload.
+`scope_dependency_conflict`, `stale_control`, and `runtime_unavailable`.
+Validation and contract errors exit 2; state, idempotency, pause, scope, and
+generation conflicts exit 3; privacy rejection exits 4; missing or forgotten
+targets exit 5; runtime failure exits 6. Success, including safe replay, exits
+0. Diagnostics go to stderr; failures never emit a partial success or mutation.
+A conflict response returns only non-sensitive identity and current control
+metadata, never either payload.
 
 The existing `decision-agent decide <profile> <request>` and `train` commands
 remain the frozen numeric MVP and keep their positional-file contract. The
@@ -295,6 +308,15 @@ state and generation. Replaying either control operation re-reads that state: it
 returns the original success only while its resulting generation is still
 current; otherwise it returns `stale: true` with non-sensitive current control
 metadata and never claims that the old state is active.
+
+`memory scope` moves records; it does not change a client default, copy records,
+or infer a selection. Every `record_id` must belong to the envelope scope, the
+target must differ, and the supplied set must be closed over links required for
+referential integrity. Under the source and target barriers, the command
+compares both expected generations, then atomically rewrites the scope of
+exactly those records and their operation identities. A non-closed selection
+fails with `scope_dependency_conflict` and non-sensitive missing record IDs,
+without moving anything.
 
 The target models are:
 
@@ -342,9 +364,9 @@ Do not publish the Skill until:
   fail closed before forgetting, and any reuse of a forgotten operation identity
   returns only the terminal marker without recreating memory;
 - immediate proposal rejection atomically creates one rejected Decision and one
-  linked Correction, and concurrent same-proposal tests prove it creates no
-  duplicates across different operation IDs or after its terminal proposal
-  marker is forgotten;
+  linked Correction, and concurrent proposal consumption by `log` or `correct`
+  creates no duplicate Decision across different operation IDs or after its
+  terminal proposal marker is forgotten;
 - scoped pause concurrency tests prove no memory is stored, retrieved, or
   applied after pause succeeds and before resume succeeds, including reads that
   began before pause;
@@ -358,6 +380,8 @@ Do not publish the Skill until:
   and replay metadata for every affected record are removed or terminalized;
 - forget race tests cover readers that precede the deletion linearization point
   and deterministic barrier acquisition for cross-scope dependencies;
+- scope tests prove only an explicitly selected, reference-closed record set
+  moves atomically and incomplete selections fail without mutation;
 - trigger and non-trigger prompts pass fresh-agent tests;
 - an end-to-end test covers natural observation, decision, correction reason,
   and a changed later decision;
