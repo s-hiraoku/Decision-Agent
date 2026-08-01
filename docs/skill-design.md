@@ -120,9 +120,12 @@ lease. `memory pause` takes the exclusive lease and drains earlier readers and
 writers before it succeeds. After the pause acknowledgement, `observe`, `log`,
 `correct`, and other non-control mutations in that scope fail closed, and
 `decide` and `explain` neither retrieve nor apply its memory. `memory list`,
-`forget`, and an explicit scoped `resume` remain available. Resume uses the same
-barrier and affects only later operations, so no personal memory is stored,
-returned, or applied between the pause and resume acknowledgements.
+`forget`, and an explicit scoped `resume` remain available, but list returns
+only non-sensitive control metadata such as scope, paused state, and generation;
+it never returns Signals, Policies, Decisions, Corrections, summaries, counts
+that reveal their content, or other personal memory while paused. Resume uses
+the same barrier and affects only later operations, so no personal memory is
+stored, returned, or applied between the pause and resume acknowledgements.
 
 The target `memory forget` operation is a hard deletion, not a permanent
 tombstone containing the forgotten data. Under the scope lock, it atomically
@@ -191,6 +194,14 @@ logical operation. The idempotency identity is `(scope, command, operation_id)`:
   sensitive terminal replay marker remain so a delayed retry cannot recreate
   deleted memory.
 
+Scoped control state has a monotonically increasing generation. `pause` and
+`resume` requests include the caller's expected generation and perform a compare-
+and-set under the write barrier. Their responses always include the current
+state and generation. Replaying either control operation re-reads that state: it
+returns the original success only while its resulting generation is still
+current; otherwise it returns `stale: true` with non-sensitive current control
+metadata and never claims that the old state is active.
+
 The target models are:
 
 - `Signal`: kind, summary, provenance, scope, confidence, status, timestamps;
@@ -239,6 +250,8 @@ Do not publish the Skill until:
 - scoped pause concurrency tests prove no memory is stored, retrieved, or
   applied after pause succeeds and before resume succeeds, including reads that
   began before pause;
+- pause and resume replay tests prove stale operations report the current scope
+  generation, and paused list tests expose only non-sensitive control metadata;
 - sensitive-data filtering and hard-deletion tests prove rejected or forgotten
   content and all dependent or derived content are absent from retrieval and
   exports, rejected decision inputs never reach an engine, and forgotten
