@@ -193,6 +193,11 @@ content. The current CLI has no `memory forget` command and still has dual
 profile/JSONL persistence, so this behavior is a release blocker rather than a
 claim about today's implementation.
 
+Caller-selected forget roots are validated against the envelope scope before
+closure expansion. Cross-scope barriers and deletion apply only to dependent or
+derived records discovered by the server from those valid local roots; callers
+cannot nominate a foreign-scope record directly.
+
 ## Target CLI Contract
 
 The stable agent-facing interface should use a versioned namespace with JSON on
@@ -269,8 +274,11 @@ Command-specific `input` fields are:
   nullable `new_alternative` (`id`, `label`, optional `details`), and nullable
   `reason`; exactly one of `decision_id`, `correction_id`, or `proposal` is
   required, and either correction field may be null for a pure rejection. A
-  `correction_id` must name an unresolved Correction in the envelope scope and
-  resolves that record rather than creating another one. The command merges
+  `decision_id` must name a Decision in the envelope scope, `correction_id` must
+  name an unresolved Correction there, and a proposal must have been issued in
+  that scope; a global or foreign-project target fails with `evidence_conflict`
+  before leases, engine use, or mutation. A `correction_id` resolves that record
+  rather than creating another one. The command merges
   supplied values with that Correction: if the resulting corrected choice is
   known it becomes `applied`; otherwise, a newly supplied reason makes it
   `explained`. At least one of `reason` or `corrected_choice` is required with
@@ -280,7 +288,8 @@ Command-specific `input` fields are:
   accepts optional `limit` (1–100, default 50), nullable opaque `cursor`, and
   optional `types` array containing `signal`, `policy`, `decision`, or
   `correction`; `forget`
-  requires a non-empty `record_ids` string array; `scope` requires non-empty
+  requires a non-empty `record_ids` string array whose caller-selected records
+  all belong to the envelope scope; `scope` requires non-empty
   `root_record_ids`, `target_scope`, and `target_expected_generation`; pause and
   resume take no other fields;
 - `doctor`: no fields.
@@ -546,6 +555,8 @@ Do not publish the Skill until:
   with a fixed agent actor and never attributes its rationale to the user;
 - unresolved-correction tests target `correction_id` and prove later reasons or
   replacements transition that exact record without creating duplicates;
+- correction target tests reject foreign Decision, Correction, and proposal IDs
+  before engine use or mutation;
 - outcome tests create a Decision-linked outcome Signal atomically and prove
   explain, scope movement, and forget follow the bidirectional provenance;
   global and foreign-project Decision IDs fail before mutation;
@@ -565,6 +576,8 @@ Do not publish the Skill until:
   mappings and removes their verifiers and cached results;
 - forget race tests cover readers that precede the deletion linearization point
   and deterministic barrier acquisition for cross-scope dependencies;
+- forget root tests reject caller-selected foreign records while still allowing
+  server-discovered cross-scope dependents to be removed or re-derived;
 - scope tests prove explicitly selected roots and their server-expanded closure
   move atomically, including closures over 100 records; source replay markers
   prevent delayed recreation, target UUID and proposal collisions fail before
