@@ -97,13 +97,25 @@ decisions as corrections. If the user already gave a reason, do not ask again.
 If the reason is missing and material to reuse, ask one natural follow-up. Link
 the correction to the original decision and report the narrow future behavior
 that changed. Keep unexplained corrections unresolved rather than inventing a
-reason.
+reason. When the user rejects an unlogged `decide` proposal, submit the returned
+proposal ID and proposal fields with `correct`; after the shared filter passes,
+that one mutation atomically creates a `Decision` with `rejected` status and its
+linked `Correction`. A retry replays both records under the same `operation_id`
+or creates neither.
 
 ### Inspect and forget
 
 Use the tool to show applicable memory when the user asks why a choice was made,
 what has been learned, or what will be reused. Honor pause, scope changes, and
 forget requests without requiring manual JSON editing.
+
+`memory pause` is scoped and acquires that scope's mutation lock. Operations
+that acquired the lock first finish before pause succeeds; after the pause
+acknowledgement, `observe`, `log`, `correct`, and other non-control mutations in
+that scope fail closed, and `decide` and `explain` neither retrieve nor apply its
+memory. `memory list`, `forget`, and an explicit scoped `resume` remain
+available. Resume takes the same lock and affects only later operations, so no
+personal memory is stored or used between the pause and resume acknowledgements.
 
 The target `memory forget` operation is a hard deletion, not a permanent
 tombstone containing the forgotten data. Under the scope lock, it atomically
@@ -143,8 +155,11 @@ published Skill uses only `agent-v1`; a future incompatible agent contract gets
 a new namespace instead of silently changing existing scripts.
 
 `agent-v1 decide` must not imply `log`: proposing and confirming are distinct.
-All responses include a contract version and machine-readable IDs. Mutation
-commands lock the relevant state scope against concurrent agents.
+It returns a proposal ID and the filtered proposal fields needed for an atomic
+`correct` if the proposal is immediately rejected; the proposal ID alone is not
+a durable Decision. All responses include a contract version and machine-
+readable IDs. Mutation commands lock the relevant state scope against concurrent
+agents.
 
 Every `observe`, `log`, `correct`, and mutating `memory` request includes a
 caller-generated `operation_id` (UUID) that is stable across retries of one
@@ -206,6 +221,10 @@ Do not publish the Skill until:
 - timed-out mutation retries deduplicate by `operation_id`, payload conflicts
   fail closed before forgetting, and any reuse of a forgotten operation identity
   returns only the terminal marker without recreating memory;
+- immediate proposal rejection atomically creates one rejected Decision and one
+  linked Correction, and retry tests prove it creates no duplicates;
+- scoped pause concurrency tests prove no memory is stored, retrieved, or
+  applied after pause succeeds and before resume succeeds;
 - sensitive-data filtering and hard-deletion tests prove rejected or forgotten
   content and all dependent or derived content are absent from retrieval and
   exports, rejected decision inputs never reach an engine, and forgotten
