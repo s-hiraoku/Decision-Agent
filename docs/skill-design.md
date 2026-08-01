@@ -353,9 +353,10 @@ Command-specific `input` fields are:
   match key is the Correction's scope, Decision context, corrected choice,
   ordered Decision alternatives with any supplied `new_alternative` appended,
   and constraints. It may influence a later decision only when that complete
-  key matches, and idempotent resolution never duplicates it. When both correction fields are
-  null on a newly created Decision- or proposal-based Correction, the same
-  mutation instead creates one linked, active, exact-context rejection Signal.
+  key matches, and idempotent resolution never duplicates it. When
+  `corrected_choice` is null on a newly created Decision- or proposal-based
+  Correction, whether `reason` is null or known, the same mutation instead
+  creates one linked, active, exact-context rejection Signal.
   Its match key is the Correction's scope, Decision context, canonical rejected
   option, ordered alternatives, and constraints; it may suppress that option
   only when all of those fields match and cannot support a Policy without a
@@ -777,7 +778,8 @@ Do not publish the Skill until:
   while completing the same Correction, reject replacement before mutating the
   Correction or linked Signals or Policies, and preserve the meaning of every
   existing Policy provenance link;
-- pure-rejection tests for Decision- and proposal-based corrections create one
+- no-replacement rejection tests for Decision- and proposal-based corrections,
+  with either a null or known reason, create one
   linked active rejection Signal, derive the same canonical rejected option
   from a Decision's selection and a proposal's recommendation, match scope,
   context, rejected option, ordered alternatives, and constraints exactly,
