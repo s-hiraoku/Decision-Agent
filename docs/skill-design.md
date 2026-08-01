@@ -55,11 +55,10 @@ Do not invoke for:
 Before `observe`, `log`, `correct`, or a mutating `memory` operation persists
 anything, and before `decide` sends any input to a local or remote decision
 engine, run the same sensitive-data filter over every stored or transmitted
-field. Before `decide`, `explain`, `memory list`, or export returns stored
-content, validate that each record belongs to the command's effective scope set
-and run the filter again over every response field. Covered fields include
-decision context, alternatives, rationale, corrections, and user-provided
-reasons:
+field. Before `decide`, `explain`, or `memory list` returns stored content,
+validate that each record belongs to the command's effective scope set and run
+the filter again over every response field. Covered fields include decision
+context, alternatives, rationale, corrections, and user-provided reasons:
 
 - remove raw conversation or artifact text that is not needed by the decision;
 - redact incidental credentials, API tokens, private keys, session cookies, and
@@ -68,8 +67,8 @@ reasons:
   decision meaning, or when highly sensitive personal data has no deliberately
   configured scope;
 - do not persist rejected content, a content hash, or the rejected secret value;
-  do not send it to the decision engine or return it from a read or export;
-  return only a non-sensitive rejection category.
+  do not send it to the decision engine or return it from a read; return only a
+  non-sensitive rejection category.
 
 ### Observe
 
@@ -148,8 +147,8 @@ order and validate each returned record against that set. A paused participating
 scope contributes no records, while other active scopes may still contribute.
 Responses list every scope and generation actually consulted so callers can
 explain whether global or project memory influenced the result. `memory list`
-and export remain limited to the single envelope scope unless the caller makes
-separate requests.
+remains limited to the single envelope scope unless the caller makes separate
+requests.
 
 Before `log` or a proposal-based `correct` persists cross-scope `evidence_ids`,
 it computes every referenced scope, acquires the destination scope's exclusive
@@ -183,9 +182,9 @@ If an affected Decision is proposal-backed, the same transaction terminalizes
 its proposal-consumption mapping and removes the proposal verifier and cached
 result even when the sanitized Decision survives. Later proposal-ID requests
 return only `forgotten: true` and cannot replay pre-forget fields.
-Retrieval and export must exclude the selected IDs, dependent records, and
-derived content from the deletion linearization point onward, with no dangling
-references. An interrupted compaction resumes before any affected scope is
+Retrieval must exclude the selected IDs, dependent records, and derived content
+from the deletion linearization point onward, with no dangling references. An
+interrupted compaction resumes before any affected scope is
 available again. Only a non-
 sensitive operation ID and terminal `forgotten` replay marker may remain to
 prevent a timed-out retry from recreating forgotten data; remove the canonical
@@ -245,12 +244,12 @@ Command-specific `input` fields are:
   remains lower-priority evidence that cannot directly activate a Policy;
 - `decide`: `context`, two or more `alternatives` (`id`, `label`, optional
   `details`) with unique IDs, and optional `constraints` string array;
-- `log`: `selected_option`, `actor` (`user` or `agent`), `status` (`confirmed`,
-  `executed`, or `rejected`), `rationale`, `evidence_ids` string array,
-  `confidence`, and either a complete `proposal` object or both `context` and
-  `alternatives`; a proposal has the same fields defined for `correct`, and its
-  confidence must match the top-level value; the two forms are mutually
-  exclusive;
+- `log`: `selected_option`, `actor` (`user` or `agent`), `status` (`confirmed`
+  or `executed`), `rationale`, `evidence_ids` string array, `confidence`, and
+  either a complete `proposal` object or both `context` and `alternatives`; a
+  proposal has the same fields defined for `correct`, and its confidence must
+  match the top-level value; the two forms are mutually exclusive. Rejection is
+  accepted only by `correct`, which atomically creates the linked Correction;
 - `correct`: nullable `decision_id`, nullable `proposal` (`proposal_id`,
   `context`, `alternatives`, `recommended_option`, `rationale`, `evidence_ids`,
   `confidence`, optional `constraints`), nullable `corrected_choice`, and
@@ -335,6 +334,9 @@ The compared canonical mutation payload is the filtered command-specific
 Canonicalization Scheme rules. It excludes `request_id`, `operation_id`, JSON
 member order, whitespace, and other per-attempt transport metadata. A retry may
 use a fresh `request_id`; changing any compared semantic field is a conflict.
+Before canonicalization, `record_ids` is treated as an unordered set: reject
+duplicates and sort by opaque ID. Semantic arrays such as `alternatives` retain
+their submitted order.
 
 - the same identity and canonical request payload returns the original result
   with `replayed: true` and creates no additional record;
@@ -362,10 +364,12 @@ claims that the old state is active.
 `memory scope` moves records; it does not change a client default, copy records,
 or infer a selection. Every `record_id` must belong to the envelope scope, the
 target must differ, and the supplied set must be closed over links required for
-referential integrity, including proposal-consumption mappings and prior move
-lineage markers. Under every lineage, source, and target barrier, the command
-compares the supplied source and target generations, then atomically rewrites
-the scope of exactly those records. Original operation
+referential integrity among caller-visible records and proposal-consumption
+mappings in the envelope scope. Prior move-lineage markers are internal closure
+state: the server discovers them and their scopes; callers never submit them.
+Under every discovered lineage, source, and target barrier, the command compares
+the supplied source and target generations, then atomically rewrites the scope
+of exactly the selected records. Original operation
 identities are never re-keyed into the target scope: each becomes a non-
 sensitive `moved: true` terminal marker in the source scope, and moved records
 retain an internal provenance pointer to that marker. A delayed original retry
@@ -450,7 +454,8 @@ Do not publish the Skill until:
   fail closed before forgetting, and any reuse of a forgotten operation identity
   returns only the terminal marker without recreating memory;
 - idempotency canonicalization tests vary request IDs, member order, whitespace,
-  and semantic fields to distinguish replay from conflict;
+  record-ID permutations, duplicates, and semantic arrays or fields to
+  distinguish replay, validation failure, and conflict;
 - immediate proposal rejection atomically creates one rejected Decision and one
   linked Correction, and concurrent proposal consumption by `log` or `correct`
   creates no duplicate Decision across different operation IDs or after its
@@ -462,10 +467,10 @@ Do not publish the Skill until:
   generation, ordinary cached mutation results stay hidden while paused, and
   paused list tests expose only non-sensitive control metadata;
 - sensitive-data filtering and hard-deletion tests prove rejected or forgotten
-  content and all dependent or derived content are absent from retrieval and
-  exports, every returned field is scope-checked and filtered, rejected decision
-  inputs never reach an engine, and forgotten payload digests, cached results,
-  and replay metadata for every affected record are removed or terminalized;
+  content and all dependent or derived content are absent from retrieval, every
+  returned field is scope-checked and filtered, rejected decision inputs never
+  reach an engine, and forgotten payload digests, cached results, and replay
+  metadata for every affected record are removed or terminalized;
 - proposal-backed re-derivation tests prove forget terminalizes proposal
   mappings and removes their verifiers and cached results;
 - forget race tests cover readers that precede the deletion linearization point
