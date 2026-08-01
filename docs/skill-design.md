@@ -285,13 +285,16 @@ Successful responses use this envelope:
 
 `scope` and `generation` are omitted only by `doctor`. `consulted_scopes` is a
 required array of `{scope, generation}` pairs for `decide` and `explain`, in
-canonical scope-key order, and omitted by other commands. Mutation results
-include created record IDs; `decide` returns `proposal_id`, filtered proposal
-fields, recommendation, evidence IDs, and confidence; `explain` and list return
-filtered records; a successful active list returns `items` in ascending
-`(created_at, id)` order and nullable `next_cursor`; memory controls return
-current state and generation. Replays set `replayed` and obey the pause, forget,
-and generation rules below.
+canonical scope-key order, and omitted by other commands. Every mutation result
+has `affected_scopes`, a canonical array of every changed scope and its post-
+commit generation; single-scope mutations return one element, while scope moves
+and cross-scope forget return all changed scopes. Mutation results also include
+created record IDs; `decide` returns `proposal_id`, filtered proposal fields,
+recommendation, evidence IDs, and confidence; `explain` and list return filtered
+records; a successful active list returns `items` in ascending `(created_at,
+id)` order and nullable `next_cursor`; memory controls return current state and
+generation. Replays set `replayed` and obey the pause, forget, and generation
+rules below.
 
 Errors after envelope validation use the same `contract`, `request_id`, and
 applicable scope metadata with `ok: false` and
@@ -359,9 +362,10 @@ claims that the old state is active.
 `memory scope` moves records; it does not change a client default, copy records,
 or infer a selection. Every `record_id` must belong to the envelope scope, the
 target must differ, and the supplied set must be closed over links required for
-referential integrity, including proposal-consumption mappings. Under the source
-and target barriers, the command compares both expected generations, then
-atomically rewrites the scope of exactly those records. Original operation
+referential integrity, including proposal-consumption mappings and prior move
+lineage markers. Under every lineage, source, and target barrier, the command
+compares the supplied source and target generations, then atomically rewrites
+the scope of exactly those records. Original operation
 identities are never re-keyed into the target scope: each becomes a non-
 sensitive `moved: true` terminal marker in the source scope, and moved records
 retain an internal provenance pointer to that marker. A delayed original retry
@@ -376,6 +380,14 @@ proposal-to-Decision mapping in the target. A delayed source `log` or `correct`
 returns only the moved marker; it never returns target content or recreates the
 Decision. Any existing target mapping for that proposal ID causes
 `proposal_conflict` before mutation.
+
+Every scope move also updates the non-sensitive move lineage for all earlier
+source markers in the selected records' history. Replaying a scope move follows
+that lineage under the applicable barriers and never returns cached generations.
+If the records still reside in the requested target, it returns `replayed: true`
+with freshly read `affected_scopes`; if they moved again, it returns
+`stale_control` with only non-sensitive current scope and generation metadata;
+if forgotten, the terminal forgotten rule takes precedence.
 
 An active list cursor is an opaque, integrity-protected token bound to contract,
 scope, generation, type filter, and the last `(created_at, id)` key; it contains
@@ -463,6 +475,8 @@ Do not publish the Skill until:
   UUID and proposal collisions fail before mutation, proposal mappings cannot
   recreate or expose moved Decisions, and incomplete selections fail without
   mutation;
+- multi-scope response tests require complete, canonical `affected_scopes`, and
+  scope replay tests cover unchanged targets, later moves, and forgetting;
 - effective-scope tests cover project-plus-global reads, paused-scope exclusion,
   canonical multi-scope leasing, the `consulted_scopes` wire field, and reported
   generations;
