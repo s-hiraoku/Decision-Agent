@@ -405,12 +405,17 @@ constraint.
 An unconsumed proposal expires 24 hours after issuance; `expires_at` is the
 immutable UTC deadline. Every proposal read, replay, log, correct, or forget
 checks that deadline even if background cleanup has not run. At expiry the
-server hard-deletes its filtered payload, verifier, issuance digest, and cached
-result and retains only the non-sensitive terminal forgotten markers needed to
-prevent retry recreation. A consumed proposal cancels expiry and follows its
-Decision's lifecycle. `memory forget` with an unconsumed proposal ID performs
-the same deletion immediately; with a consumed proposal ID it expands through
-the mapped Decision and its dependent closure.
+server logically treats the proposal as forgotten immediately. A per-user
+cleanup worker runs at least every 15 minutes and, under the envelope scope's
+exclusive barrier, physically deletes the filtered payload, verifier, issuance
+digest, and cached result no later than 15 minutes after expiry; only the non-
+sensitive terminal forgotten markers needed to prevent retry recreation remain.
+Before accepting any command, runtime startup performs the same scan and
+finishes interrupted cleanup, covering machines that were off at the deadline.
+A consumed proposal cancels expiry and follows its Decision's lifecycle.
+`memory forget` with an unconsumed proposal ID performs the same deletion
+immediately; with a consumed proposal ID it expands through the mapped Decision
+and its dependent closure.
 
 Every `decide`, `observe`, `log`, `correct`, and mutating `memory` request
 includes a caller-generated `operation_id` (UUID) that is stable across retries
@@ -595,6 +600,9 @@ Release the CLI and Skill from the same immutable Git tag. Install the CLI with
 `uv tool install` or `pipx`, then install `skills/decision-agent` from the same
 tag with the Codex Skill installer. The Skill checks the CLI contract version
 with `decision-agent agent-v1 doctor` and refuses incompatible combinations.
+Installation also configures a user-level OS timer or equivalent always-on
+worker for proposal cleanup. `doctor` fails readiness when that cleanup service
+is absent, disabled, late, or cannot access the configured state directory.
 
 Do not publish the Skill until:
 
@@ -644,9 +652,10 @@ Do not publish the Skill until:
   metadata for every affected record are removed or terminalized;
 - proposal-backed re-derivation tests prove forget terminalizes proposal
   mappings and removes their verifiers and cached results;
-- unconsumed proposal tests cover explicit proposal-ID forget, 24-hour logical
-  expiry without a cleanup worker, terminal retry behavior, and consumed
-  proposal closure deletion;
+- unconsumed proposal tests cover explicit proposal-ID forget, immediate logical
+  expiry, physical deletion within the 15-minute bound without later proposal
+  access, startup recovery, scheduler failure in `doctor`, terminal retry
+  behavior, and consumed proposal closure deletion;
 - forget race tests cover readers that precede the deletion linearization point
   and deterministic barrier acquisition for cross-scope dependencies;
 - forget root tests reject caller-selected foreign records while still allowing
