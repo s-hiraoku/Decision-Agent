@@ -278,7 +278,10 @@ Command-specific `input` fields are:
   The explicit non-proposal form also accepts optional `constraints`. For a
   proposal-backed log, `selected_option` must equal `recommended_option`; a
   mismatch fails with `invalid_request` without consuming the proposal and must
-  be submitted through proposal-based `correct` as an override;
+  be submitted through proposal-based `correct` as an override. After the
+  shared filter, every carried proposal field must match the complete canonical
+  proposal digest stored at issuance; any mismatch returns `proposal_conflict`
+  without consuming the proposal or persisting a Decision;
 - `correct`: nullable `decision_id`, nullable `correction_id`, nullable
   `proposal` (`proposal_id`, `context`, `alternatives`, `recommended_option`,
   `rationale`, `evidence_ids`, `confidence`, optional `constraints`, optional
@@ -294,7 +297,13 @@ Command-specific `input` fields are:
   supplied values with that Correction: if the resulting corrected choice is
   known it becomes `applied`; otherwise, a newly supplied reason makes it
   `explained`. At least one of `reason` or `corrected_choice` is required with
-  `correction_id`, and a terminal Correction cannot be resolved again;
+  `correction_id`, and a terminal Correction cannot be resolved again.
+  Proposal-based `correct` applies the same full canonical proposal-digest check
+  as proposal-backed `log` before validating or storing the correction. The
+  digest covers context, ordered alternatives and their complete fields,
+  recommendation, rationale, evidence IDs, confidence, constraints, unresolved
+  uncertainties, and all other proposal fields after filtering; it excludes
+  only transport metadata;
 - `explain`: `target_type` (`decision` or `policy`) and `target_id`;
 - `memory`: `action` (`list`, `pause`, `resume`, `scope`, or `forget`); list
   accepts optional `limit` (1–100, default 50), nullable opaque `cursor`, and
@@ -406,12 +415,16 @@ An unconsumed proposal expires 24 hours after issuance; `expires_at` is the
 immutable UTC deadline. Every proposal read, replay, log, correct, or forget
 checks that deadline even if background cleanup has not run. At expiry the
 server logically treats the proposal as forgotten immediately. A per-user
-cleanup worker runs at least every 15 minutes and, under the envelope scope's
-exclusive barrier, physically deletes the filtered payload, verifier, issuance
-digest, and cached result no later than 15 minutes after expiry; only the non-
-sensitive terminal forgotten markers needed to prevent retry recreation remain.
-Before accepting any command, runtime startup performs the same scan and
-finishes interrupted cleanup, covering machines that were off at the deadline.
+cleanup worker runs at least every 15 minutes. While the runtime is available,
+it begins deletion within 15 minutes of expiry and completes as soon as it can
+acquire the envelope scope's exclusive barrier; a pre-existing lease may extend
+physical retention only until that lease drains. It then deletes the filtered
+payload, verifier, issuance digest, and cached result; only the non-sensitive
+terminal forgotten markers needed to prevent retry recreation remain. Before
+accepting any command, runtime startup performs the same scan and finishes
+interrupted cleanup, covering time when the machine or cleanup service was not
+available. The 15-minute bound therefore counts cleanup-runtime availability,
+not wall-clock time while the machine is off.
 A consumed proposal cancels expiry and follows its Decision's lifecycle.
 `memory forget` with an unconsumed proposal ID performs the same deletion
 immediately; with a consumed proposal ID it expands through the mapped Decision
@@ -629,6 +642,8 @@ Do not publish the Skill until:
 - proposal-backed log rejects a selected/recommended mismatch without consuming
   the proposal, while proposal-based correct records the rejected recommendation
   with a fixed agent actor and never attributes its rationale to the user;
+- proposal consumption tests alter each carried proposal field and require a
+  pre-mutation `proposal_conflict` unless the complete canonical digest matches;
 - unresolved-correction tests target `correction_id` and prove later reasons or
   replacements transition that exact record without creating duplicates;
 - correction target tests reject foreign Decision, Correction, and proposal IDs
@@ -653,8 +668,9 @@ Do not publish the Skill until:
 - proposal-backed re-derivation tests prove forget terminalizes proposal
   mappings and removes their verifiers and cached results;
 - unconsumed proposal tests cover explicit proposal-ID forget, immediate logical
-  expiry, physical deletion within the 15-minute bound without later proposal
-  access, startup recovery, scheduler failure in `doctor`, terminal retry
+  expiry, cleanup attempt within 15 minutes of runtime availability without
+  later proposal access, completion after a blocking lease drains, startup
+  recovery after downtime, scheduler failure in `doctor`, terminal retry
   behavior, and consumed proposal closure deletion;
 - forget race tests cover readers that precede the deletion linearization point
   and deterministic barrier acquisition for cross-scope dependencies;
