@@ -93,7 +93,9 @@ A durable decision record contains:
 - whether it is confirmed, executed, or rejected;
 - a concise, user-facing rationale rather than hidden chain-of-thought;
 - the signal and policy IDs used;
-- confidence and unresolved uncertainty;
+- confidence and unresolved uncertainties, carried through the proposal and
+  logging contracts into the durable Decision rather than kept only in agent
+  narration;
 - later outcomes and corrections.
 
 Keep a transient proposal separate from a durable Decision. `decide` does not

@@ -245,18 +245,27 @@ Command-specific `input` fields are:
 - `decide`: `context`, two or more `alternatives` (`id`, `label`, optional
   `details`) with unique IDs, and optional `constraints` string array;
 - `log`: `selected_option`, `actor` (`user` or `agent`), `status` (`confirmed`
-  or `executed`), `rationale`, `evidence_ids` string array, `confidence`, and
+  or `executed`), `rationale`, `evidence_ids` string array, `confidence`,
+  optional `unresolved_uncertainties` string array, and
   either a complete `proposal` object or both `context` and `alternatives`; a
-  proposal has the same fields defined for `correct`, and its confidence must
-  match the top-level value; the two forms are mutually exclusive. Rejection is
+  proposal has the same fields defined for `correct`, and its confidence and
+  unresolved uncertainties must match the top-level values; the two forms are
+  mutually exclusive. Rejection is
   accepted only by `correct`, which atomically creates the linked Correction.
   The explicit non-proposal form also accepts optional `constraints`;
-- `correct`: nullable `decision_id`, nullable `proposal` (`proposal_id`,
-  `context`, `alternatives`, `recommended_option`, `rationale`, `evidence_ids`,
-  `confidence`, optional `constraints`), nullable `corrected_choice`, and
+- `correct`: nullable `decision_id`, nullable `correction_id`, nullable
+  `proposal` (`proposal_id`, `context`, `alternatives`, `recommended_option`,
+  `rationale`, `evidence_ids`, `confidence`, optional `constraints`, optional
+  `unresolved_uncertainties`), nullable `corrected_choice`, and
   nullable `new_alternative` (`id`, `label`, optional `details`), and nullable
-  `reason`; exactly one of `decision_id` or `proposal` is required, and either
-  correction field may be null for a pure rejection;
+  `reason`; exactly one of `decision_id`, `correction_id`, or `proposal` is
+  required, and either correction field may be null for a pure rejection. A
+  `correction_id` must name an unresolved Correction in the envelope scope and
+  resolves that record rather than creating another one. The command merges
+  supplied values with that Correction: if the resulting corrected choice is
+  known it becomes `applied`; otherwise, a newly supplied reason makes it
+  `explained`. At least one of `reason` or `corrected_choice` is required with
+  `correction_id`, and a terminal Correction cannot be resolved again;
 - `explain`: `target_type` (`decision` or `policy`) and `target_id`;
 - `memory`: `action` (`list`, `pause`, `resume`, `scope`, or `forget`); list
   accepts optional `limit` (1–100, default 50), nullable opaque `cursor`, and
@@ -291,8 +300,9 @@ has `affected_scopes`, a canonical array of every changed scope and its post-
 commit generation; single-scope mutations return one element, while scope moves
 and cross-scope forget return all changed scopes. Mutation results also include
 created record IDs; `decide` returns `proposal_id`, filtered proposal fields,
-recommendation, evidence IDs, and confidence; `explain` and list return filtered
-records; a successful active list returns `items` in ascending `(created_at,
+recommendation, evidence IDs, confidence, and unresolved uncertainties;
+`explain` and list return filtered records; a successful active list returns
+`items` in ascending `(created_at,
 id)` order and nullable `next_cursor`; memory controls return current state and
 generation. Replays set `replayed` and obey the pause, forget, and generation
 rules below.
@@ -304,7 +314,7 @@ missing common field, the server still emits one JSON error with
 `contract: "agent-v1"`, `request_id: null` unless the supplied value is a valid
 UUID, and no scope metadata. Stable codes are
 `invalid_request`, `unsupported_contract`, `sensitive_rejected`, `paused`,
-`not_found`, `forgotten`, `operation_conflict`, `generation_conflict`,
+`not_found`, `forgotten`, `moved`, `operation_conflict`, `generation_conflict`,
 `scope_dependency_conflict`, `proposal_conflict`, `evidence_conflict`,
 `stale_cursor`, `stale_control`, and `runtime_unavailable`.
 Validation and contract errors exit 2; state, idempotency, pause, scope, and
@@ -317,6 +327,13 @@ exactly `ok: false`, top-level `replayed: true`, no `result` or
 sensitive current generation. Diagnostics go to stderr; failures never emit a
 partial success or mutation. A conflict response returns only non-sensitive
 identity and current control metadata, never either payload.
+
+A terminal replay after a record or proposal has moved is exactly `ok: false`,
+top-level `replayed: true`, no `result`, `affected_scopes`, target scope, or
+record fields, and `error: {"code":"moved","message":"moved",
+"retryable":false}`; it exits 5 and may include only the original envelope
+scope's non-sensitive current generation. This envelope applies both to an
+operation marker and to a proposal-consumption marker.
 
 The existing `decision-agent decide <profile> <request>` and `train` commands
 remain the frozen numeric MVP and keep their positional-file contract. The
@@ -415,14 +432,21 @@ record pagination fields and returns only the control metadata defined above.
 
 The target models are:
 
-- `Signal`: kind, summary, provenance, scope, confidence, status, timestamps;
-- `Policy`: text, scope, supporting and contradicting signal IDs, status;
+- `Signal`: kind, summary, provenance, scope, confidence, status, `created_at`
+  and any other lifecycle timestamps;
+- `Policy`: text, scope, supporting and contradicting signal IDs, status,
+  `created_at`;
 - `Decision`: context, alternatives, selected option, actor, scope, status,
-  rationale, evidence IDs, confidence, and optional constraints;
+  rationale, evidence IDs, confidence, optional constraints, unresolved
+  uncertainties, and `created_at`;
 - `Correction`: decision ID, corrected choice, nullable reason, scope, status
-  (`unresolved`, `explained`, or `applied`), resulting changes. Corrected choice
+  (`unresolved`, `explained`, or `applied`), resulting changes, and
+  `created_at`. Corrected choice
   is nullable for a pure rejection; the status remains `unresolved` while the
   reusable replacement or reason is unknown.
+
+Every `created_at` above is an immutable UTC timestamp assigned at record
+creation and forms the universal list ordering key with the record ID.
 
 Alternative IDs are unique within each request and durable Decision.
 `recommended_option` and `selected_option` must equal exactly one submitted
@@ -456,7 +480,7 @@ Skill directory.
 Release the CLI and Skill from the same immutable Git tag. Install the CLI with
 `uv tool install` or `pipx`, then install `skills/decision-agent` from the same
 tag with the Codex Skill installer. The Skill checks the CLI contract version
-with `decision-agent doctor` and refuses incompatible combinations.
+with `decision-agent agent-v1 doctor` and refuses incompatible combinations.
 
 Do not publish the Skill until:
 
@@ -477,6 +501,8 @@ Do not publish the Skill until:
   linked Correction, and concurrent proposal consumption by `log` or `correct`
   creates no duplicate Decision across different operation IDs or after its
   terminal proposal marker is forgotten;
+- unresolved-correction tests target `correction_id` and prove later reasons or
+  replacements transition that exact record without creating duplicates;
 - scoped pause concurrency tests prove no memory is stored, retrieved, or
   applied after pause succeeds and before resume succeeds, including reads that
   began before pause;
@@ -500,6 +526,10 @@ Do not publish the Skill until:
   moved or traversed, and foreign-project evidence fails before mutation;
 - multi-scope response tests require complete, canonical `affected_scopes`, and
   scope replay tests cover unchanged targets, later moves, and forgetting;
+- moved operation and proposal retry tests require the exact terminal `moved`
+  envelope and prove that it reveals no target scope or record content;
+- proposal/log/model conformance tests preserve unresolved uncertainties, and
+  every listable record type supplies immutable `created_at` for stable paging;
 - effective-scope tests cover project-plus-global reads, paused-scope exclusion,
   canonical multi-scope leasing, the `consulted_scopes` wire field, and reported
   generations;
