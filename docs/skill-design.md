@@ -242,7 +242,10 @@ Command-specific `input` fields are:
   `user_action`, or `agent_inference`, plus opaque `reference`), and
   `confidence`, plus nullable `decision_id`; `decision_id` is required exactly
   for `outcome`. An outcome observation atomically creates the linked Signal and
-  appends its ID to the Decision's outcome links. Inferred provenance must
+  appends its ID to the Decision's outcome links. That Decision must belong to
+  the envelope scope; a global or foreign-project target fails with
+  `evidence_conflict` before mutation, so this path holds only the envelope
+  scope's exclusive lease. Inferred provenance must
   reference its user-authored basis and remains lower-priority evidence that
   cannot directly activate a Policy;
 - `decide`: `context`, two or more `alternatives` (`id`, `label`, optional
@@ -477,6 +480,14 @@ activates or changes a Policy, that Policy must include the Correction ID in its
 supporting or contradicting Correction links so provenance traversal, explain,
 and forget can find it.
 
+`correct` may create or mutate a Policy only in its envelope scope. Applicable
+global Policies are read-only external evidence during a project correction;
+the correction may create a narrower project Policy that supports or
+contradicts them, but it never rewrites the global record. Updating a global
+Policy requires a separate global-scoped evidence flow. The command discovers
+every envelope-scope Policy it will change before commit and holds that scope's
+exclusive lease through Correction and Policy persistence.
+
 Alternative IDs are unique within each request and durable Decision.
 `recommended_option` and `selected_option` must equal exactly one submitted
 alternative ID. A non-null `corrected_choice` must equal one alternative ID on
@@ -537,6 +548,7 @@ Do not publish the Skill until:
   replacements transition that exact record without creating duplicates;
 - outcome tests create a Decision-linked outcome Signal atomically and prove
   explain, scope movement, and forget follow the bidirectional provenance;
+  global and foreign-project Decision IDs fail before mutation;
 - scoped pause concurrency tests prove no memory is stored, retrieved, or
   applied after pause succeeds and before resume succeeds, including reads that
   began before pause;
@@ -569,7 +581,8 @@ Do not publish the Skill until:
   every listable record type supplies immutable `created_at` for stable paging;
 - correction-derived Policy tests require durable Correction evidence links and
   prove dependent policies are removed or re-derived when that provenance is
-  forgotten;
+  forgotten; project corrections can create or change only project Policies and
+  never mutate an applicable global Policy;
 - effective-scope tests cover project-plus-global reads, paused-scope exclusion,
   canonical multi-scope leasing, the `consulted_scopes` wire field, and reported
   generations;
