@@ -580,7 +580,7 @@ Implemented first steps:
 Still incomplete:
 
 - proactive extraction of scoped decision signals from ordinary agent work
-- general decision records that distinguish proposed, confirmed, and executed choices
+- transient proposals separated from confirmed, executed, or rejected durable decisions
 - correction dialogue that asks for a missing reason and reuses it later
 - inspect, pause, scope, and forget controls for personal judgment memory
 - the distributable Skill defined in [Skill Design](skill-design.md)

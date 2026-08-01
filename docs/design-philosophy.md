@@ -36,7 +36,7 @@ Decision Agent separates four kinds of memory:
 | --- | --- | --- |
 | `Signal` | A scoped observation that may matter to a future decision | a choice, rejection, constraint, trade-off, example, or stated reason |
 | `Policy` | A reusable judgment rule supported by signals and corrections | repeated evidence or a sufficiently specific correction |
-| `Decision` | A proposed, confirmed, or executed choice and its explainable basis | a material decision made with or checked by Decision Agent |
+| `Decision` | A confirmed, executed, or rejected choice and its explainable basis | a material decision made with or checked by Decision Agent |
 | `Correction` | A difference between the recorded decision and what the user would choose, including the reason when known | the user's objection, override, or retrospective correction |
 
 These are target conceptual categories. `Policy` is the umbrella for today's
@@ -87,17 +87,20 @@ A durable decision record contains:
 
 - the decision context and scope;
 - the alternatives considered;
+- the constraints applied;
 - the selected alternative;
 - who made or confirmed the choice;
-- whether it is proposed, confirmed, or executed;
+- whether it is confirmed, executed, or rejected;
 - a concise, user-facing rationale rather than hidden chain-of-thought;
 - the signal and policy IDs used;
 - confidence and unresolved uncertainty;
 - later outcomes and corrections.
 
-Keep proposing a decision separate from confirming or executing it. A delegated
-agent may make an in-scope decision, but the record must identify the actor and
-must not pretend that an agent decision was personally confirmed by the user.
+Keep a transient proposal separate from a durable Decision. `decide` does not
+persist a Decision; `log` records a confirmed or executed proposal, while an
+immediate correction may atomically record it as rejected. A delegated agent may
+make an in-scope decision, but the record must identify the actor and must not
+pretend that an agent decision was personally confirmed by the user.
 
 ## Correction Loop
 

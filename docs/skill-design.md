@@ -179,6 +179,10 @@ For every deleted, redacted, or re-derived record, forget also replaces each
 affected operation entry with the terminal `forgotten` marker and removes its
 original payload, digest, result identity, and cached result; replay can never
 return a pre-forget representation even when a sanitized record survives.
+If an affected Decision is proposal-backed, the same transaction terminalizes
+its proposal-consumption mapping and removes the proposal verifier and cached
+result even when the sanitized Decision survives. Later proposal-ID requests
+return only `forgotten: true` and cannot replay pre-forget fields.
 Retrieval and export must exclude the selected IDs, dependent records, and
 derived content from the deletion linearization point onward, with no dangling
 references. An interrupted compaction resumes before any affected scope is
@@ -249,9 +253,9 @@ Command-specific `input` fields are:
   exclusive;
 - `correct`: nullable `decision_id`, nullable `proposal` (`proposal_id`,
   `context`, `alternatives`, `recommended_option`, `rationale`, `evidence_ids`,
-  `confidence`), nullable `corrected_choice`, and nullable `reason`; exactly one
-  of `decision_id` or `proposal` is required, and either correction field may be
-  null for a pure rejection;
+  `confidence`, optional `constraints`), nullable `corrected_choice`, and
+  nullable `reason`; exactly one of `decision_id` or `proposal` is required, and
+  either correction field may be null for a pure rejection;
 - `explain`: `target_type` (`decision` or `policy`) and `target_id`;
 - `memory`: `action` (`list`, `pause`, `resume`, `scope`, or `forget`); list
   accepts optional `limit` (1–100, default 50), nullable opaque `cursor`, and
@@ -385,7 +389,7 @@ The target models are:
 - `Signal`: kind, summary, provenance, scope, confidence, status, timestamps;
 - `Policy`: text, scope, supporting and contradicting signal IDs, status;
 - `Decision`: context, alternatives, selected option, actor, scope, status,
-  rationale, evidence IDs, confidence;
+  rationale, evidence IDs, confidence, and optional constraints;
 - `Correction`: decision ID, corrected choice, nullable reason, scope, status
   (`unresolved`, `explained`, or `applied`), resulting changes. Corrected choice
   is nullable for a pure rejection; the status remains `unresolved` while the
@@ -450,6 +454,8 @@ Do not publish the Skill until:
   exports, every returned field is scope-checked and filtered, rejected decision
   inputs never reach an engine, and forgotten payload digests, cached results,
   and replay metadata for every affected record are removed or terminalized;
+- proposal-backed re-derivation tests prove forget terminalizes proposal
+  mappings and removes their verifiers and cached results;
 - forget race tests cover readers that precede the deletion linearization point
   and deterministic barrier acquisition for cross-scope dependencies;
 - scope tests prove only an explicitly selected, reference-closed record set
