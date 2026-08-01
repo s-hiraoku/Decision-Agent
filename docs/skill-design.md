@@ -136,19 +136,19 @@ it never returns Signals, Policies, Decisions, Corrections, summaries, counts
 that reveal their content, or other personal memory while paused. Resume uses
 the same barrier and affects only later operations, so no personal memory is
 stored, returned, or applied between the pause and resume acknowledgements.
-Pause state takes precedence over ordinary mutation replay: while paused, a
-retry of `observe`, `log`, `correct`, or `memory scope` returns only a non-
-sensitive `paused` error and never a cached result or location map. The
-operation remains replayable after resume.
+Pause state takes precedence over idempotent-operation replay: while paused, a
+retry of `decide`, `observe`, `log`, `correct`, or `memory scope` returns only a
+non-sensitive `paused` error and never a cached proposal, result, or location
+map. The operation remains replayable after resume.
 
 Operation metadata retains the canonical set of every scope read or changed by
-the original mutation without retaining evidence content. Before replaying any
-mutation, the server acquires shared leases for that full participating set in
-canonical order, holds them through response construction, and revalidates
-pause state. If any participating scope is
-paused, the exact paused envelope takes precedence and no cached result,
+the original idempotent operation, including proposal issuance, without
+retaining evidence content. Before replaying any such operation, the server
+acquires shared leases for that full participating set in canonical order,
+holds them through response construction, and revalidates pause state. If any
+participating scope is paused, the exact paused envelope takes precedence and no cached result,
 evidence, affected-scope metadata, location, record ID, or record count is
-returned. This includes project mutations that read global evidence and replays
+returned. This includes project operations that read global evidence and replays
 of cross-scope forget.
 
 For a project-scoped `decide` or `explain`, the effective scope set is that
@@ -204,8 +204,8 @@ content. The current CLI has no `memory forget` command and still has dual
 profile/JSONL persistence, so this behavior is a release blocker rather than a
 claim about today's implementation.
 
-Caller-selected forget roots are validated against the envelope scope before
-closure expansion. Cross-scope barriers and deletion apply only to dependent or
+Caller-selected record and proposal forget roots are validated against the
+envelope scope before closure expansion. Cross-scope barriers and deletion apply only to dependent or
 derived records discovered by the server from those valid local roots; callers
 cannot nominate a foreign-scope record directly.
 
@@ -299,9 +299,9 @@ Command-specific `input` fields are:
 - `memory`: `action` (`list`, `pause`, `resume`, `scope`, or `forget`); list
   accepts optional `limit` (1–100, default 50), nullable opaque `cursor`, and
   optional `types` array containing `signal`, `policy`, `decision`, or
-  `correction`; `forget`
-  requires a non-empty `record_ids` string array whose caller-selected records
-  all belong to the envelope scope; `scope` requires non-empty
+  `correction`; `forget` accepts `record_ids` and `proposal_ids` string arrays,
+  requires at least one to be non-empty, and requires every caller-selected
+  record or proposal to belong to the envelope scope; `scope` requires non-empty
   `root_record_ids`, `target_scope`, and `target_expected_generation`; pause and
   resume take no other fields;
 - `doctor`: no fields.
@@ -329,8 +329,9 @@ canonical scope-key order, and omitted by other commands. Every mutation result
 has `affected_scopes`, a canonical array of every changed scope and its post-
 commit generation; single-scope mutations return one element, while scope moves
 and cross-scope forget return all changed scopes. Mutation results also include
-created record IDs; `decide` returns `proposal_id`, filtered proposal fields,
-recommendation, evidence IDs, confidence, and unresolved uncertainties;
+created record IDs; `decide` returns `proposal_id`, `expires_at`, filtered
+proposal fields, recommendation, evidence IDs, confidence, and unresolved
+uncertainties;
 `explain` and list return filtered records; a successful active list returns
 `items` in ascending `(created_at,
 id)` order and nullable `next_cursor`; memory controls return current state and
@@ -401,6 +402,16 @@ readable IDs. Commands that store, retrieve, or apply memory use the relevant
 scope's read/write barrier; proposal consumption also uses a unique proposal-ID
 constraint.
 
+An unconsumed proposal expires 24 hours after issuance; `expires_at` is the
+immutable UTC deadline. Every proposal read, replay, log, correct, or forget
+checks that deadline even if background cleanup has not run. At expiry the
+server hard-deletes its filtered payload, verifier, issuance digest, and cached
+result and retains only the non-sensitive terminal forgotten markers needed to
+prevent retry recreation. A consumed proposal cancels expiry and follows its
+Decision's lifecycle. `memory forget` with an unconsumed proposal ID performs
+the same deletion immediately; with a consumed proposal ID it expands through
+the mapped Decision and its dependent closure.
+
 Every `decide`, `observe`, `log`, `correct`, and mutating `memory` request
 includes a caller-generated `operation_id` (UUID) that is stable across retries
 of one logical operation. The idempotency identity is
@@ -411,9 +422,9 @@ specific `input` plus any expected-generation fields, serialized with RFC 8785
 JSON Canonicalization Scheme rules. It excludes `request_id`, `operation_id`, JSON
 member order, whitespace, and other per-attempt transport metadata. A retry may
 use a fresh `request_id`; changing any compared semantic field is a conflict.
-Before canonicalization, `record_ids` and `root_record_ids` are treated as
-unordered sets: reject duplicates and sort by opaque ID. Semantic arrays such as
-`alternatives` retain their submitted order.
+Before canonicalization, `record_ids`, `proposal_ids`, and `root_record_ids` are
+treated as unordered sets: reject duplicates and sort by opaque ID. Semantic
+arrays such as `alternatives` retain their submitted order.
 
 - the same identity and canonical request payload returns the original result
   with `replayed: true` and creates no additional record or proposal; a retried
@@ -598,7 +609,8 @@ Do not publish the Skill until:
   fail closed before forgetting, and any reuse of a forgotten operation identity
   returns the exact terminal error envelope without recreating memory;
 - timed-out `decide` retries return exactly one proposal ID per operation and
-  cannot be consumed into duplicate Decisions;
+  cannot be consumed into duplicate Decisions; replay also suppresses the
+  cached proposal when any consulted scope is paused;
 - idempotency canonicalization tests vary request IDs, member order, whitespace,
   record-ID permutations, duplicates, and semantic arrays or fields to
   distinguish replay, validation failure, and conflict;
@@ -632,6 +644,9 @@ Do not publish the Skill until:
   metadata for every affected record are removed or terminalized;
 - proposal-backed re-derivation tests prove forget terminalizes proposal
   mappings and removes their verifiers and cached results;
+- unconsumed proposal tests cover explicit proposal-ID forget, 24-hour logical
+  expiry without a cleanup worker, terminal retry behavior, and consumed
+  proposal closure deletion;
 - forget race tests cover readers that precede the deletion linearization point
   and deterministic barrier acquisition for cross-scope dependencies;
 - forget root tests reject caller-selected foreign records while still allowing
