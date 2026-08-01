@@ -26,6 +26,7 @@
 | G3 | 評価のセマンティックマッチング | **一部実装:** heuristic 側の文字 n-gram。LLM ジャッジは未実装(§7) |
 | G4 | 生成エージェントとのオーケストレーション | Revise ループの JSON 契約定義(§8。実装は契約のみ、生成側は非スコープ) |
 | G5 | 数値スコアでない、ユーザー整合の判断最適化 | **一部実装:** 構造化ルール、反復による昇格、限定的な矛盾フラグ、実績カウント。高度な最適化は未実装(§3, §6) |
+| G6 | 日常の判断シグナル観察と訂正ループ | **未実装:** `observe -> decide -> log -> correct -> learn -> reuse` と Skill 契約を [設計思想](design-philosophy.md) / [Skill 設計](skill-design.md) に定義 |
 
 ### 1.2 設計原則(仕様書から継承)
 
@@ -38,6 +39,11 @@
 6. **LLM 抽出案は自動採用しない。** 将来 LLM が自由記述から抽出するルールは
    candidate 状態にとどめ、ユーザー承認を要求する。現在の明示フィードバック由来の
    candidate は、同じパターンが別レコードで反復すると自動昇格する。
+7. **観察に明示的な記憶命令を要求しない。** 選択、却下、制約、トレードオフ、
+   訂正は自然な作業中に Signal 候補として拾う。ただし Signal の保存と、広い範囲で
+   再利用する Policy の有効化は分離する。
+8. **訂正理由を高価値の差分として扱う。** 理由が会話にあれば再質問せず、なければ
+   次の判断に必要な場合だけ自然に確認する。理由を得られないときは推測で補わない。
 
 ### 1.3 非スコープ
 
@@ -65,7 +71,10 @@ src/decision_agent/
 `DecisionAgent` は「review → learn → evaluate のループ制御」と「エンジンへの委譲」だけを持ち、
 判定ロジック本体は `engines/` に置く。既存の `agent.py` 内のヒューリスティック
 (`_text_similarity`、`_matched_items` など)は `engines/heuristic.py` へ移設済み。
-既存の option-ranking(`decide` / `train`)は `agent.py` に残す(凍結。今後拡張しない)。
+既存の option-ranking(`decide` / `train`)は `agent.py` に残す(現行 MVP としては凍結)。
+将来の汎用判断層はこの数値プロトタイプを暗黙に拡張せず、
+[Skill 設計](skill-design.md) の Signal / Policy / Decision / Correction 契約として
+別途設計・実装する。
 
 当初案の `prompts.py` と `rendering.py` は作成していない。Gateway 用プロンプトと
 JSON Schema は現在 `engines/llm.py` にあり、プロバイダ固有のキャッシュや

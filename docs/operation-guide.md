@@ -1,5 +1,11 @@
 # Decision Agent Operation Guide
 
+> This guide documents the current explicit CLI workflow. The target product
+> also observes decision signals during ordinary agent work and learns from
+> corrections without requiring a special memory command; those unimplemented
+> contracts are defined in [Design Philosophy](design-philosophy.md) and
+> [Skill Design](skill-design.md).
+
 This guide describes how to run Decision Agent so it gradually becomes closer to
 the user's judgment.
 
