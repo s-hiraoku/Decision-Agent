@@ -249,20 +249,22 @@ Command-specific `input` fields are:
   either a complete `proposal` object or both `context` and `alternatives`; a
   proposal has the same fields defined for `correct`, and its confidence must
   match the top-level value; the two forms are mutually exclusive. Rejection is
-  accepted only by `correct`, which atomically creates the linked Correction;
+  accepted only by `correct`, which atomically creates the linked Correction.
+  The explicit non-proposal form also accepts optional `constraints`;
 - `correct`: nullable `decision_id`, nullable `proposal` (`proposal_id`,
   `context`, `alternatives`, `recommended_option`, `rationale`, `evidence_ids`,
   `confidence`, optional `constraints`), nullable `corrected_choice`, and
-  nullable `reason`; exactly one of `decision_id` or `proposal` is required, and
-  either correction field may be null for a pure rejection;
+  nullable `new_alternative` (`id`, `label`, optional `details`), and nullable
+  `reason`; exactly one of `decision_id` or `proposal` is required, and either
+  correction field may be null for a pure rejection;
 - `explain`: `target_type` (`decision` or `policy`) and `target_id`;
 - `memory`: `action` (`list`, `pause`, `resume`, `scope`, or `forget`); list
   accepts optional `limit` (1–100, default 50), nullable opaque `cursor`, and
   optional `types` array containing `signal`, `policy`, `decision`, or
   `correction`; `forget`
-  requires a non-empty `record_ids` string array; `scope` requires `record_ids`,
-  `target_scope`, and `target_expected_generation`; pause and resume take no
-  other fields;
+  requires a non-empty `record_ids` string array; `scope` requires non-empty
+  `root_record_ids`, `target_scope`, and `target_expected_generation`; pause and
+  resume take no other fields;
 - `doctor`: no fields.
 
 Successful responses use this envelope:
@@ -334,9 +336,9 @@ The compared canonical mutation payload is the filtered command-specific
 Canonicalization Scheme rules. It excludes `request_id`, `operation_id`, JSON
 member order, whitespace, and other per-attempt transport metadata. A retry may
 use a fresh `request_id`; changing any compared semantic field is a conflict.
-Before canonicalization, `record_ids` is treated as an unordered set: reject
-duplicates and sort by opaque ID. Semantic arrays such as `alternatives` retain
-their submitted order.
+Before canonicalization, `record_ids` and `root_record_ids` are treated as
+unordered sets: reject duplicates and sort by opaque ID. Semantic arrays such as
+`alternatives` retain their submitted order.
 
 - the same identity and canonical request payload returns the original result
   with `replayed: true` and creates no additional record;
@@ -362,21 +364,21 @@ returns `stale: true` with non-sensitive current control metadata and never
 claims that the old state is active.
 
 `memory scope` moves records; it does not change a client default, copy records,
-or infer a selection. Every `record_id` must belong to the envelope scope, the
-target must differ, and the supplied set must be closed over links required for
-referential integrity among caller-visible records and proposal-consumption
-mappings in the envelope scope. Prior move-lineage markers are internal closure
-state: the server discovers them and their scopes; callers never submit them.
-Under every discovered lineage, source, and target barrier, the command compares
-the supplied source and target generations, then atomically rewrites the scope
-of exactly the selected records. Original operation
-identities are never re-keyed into the target scope: each becomes a non-
+or change unrelated records. Every root must belong to the envelope scope and
+the target must differ. The server expands those roots to the complete
+referential closure, including any number of linked records, proposal mappings,
+operation metadata, and prior move-lineage markers; callers never enumerate
+internal state or the full closure. Under every discovered lineage, source, and
+target barrier, the command revalidates the closure, compares the supplied
+source and target generations, then atomically rewrites the scope of the full
+closure. Original operation identities are never re-keyed into the target scope:
+each becomes a non-
 sensitive `moved: true` terminal marker in the source scope, and moved records
 retain an internal provenance pointer to that marker. A delayed original retry
 therefore cannot recreate the record, and an unrelated target-scope operation
-with the same UUID cannot collide. A non-closed selection fails with
-`scope_dependency_conflict` and non-sensitive missing record IDs, without moving
-anything.
+with the same UUID cannot collide. If the server cannot resolve a complete,
+consistent closure, it returns `scope_dependency_conflict` with non-sensitive
+missing record IDs and moves nothing.
 
 For a moved proposal-backed Decision, the same transaction leaves a non-
 sensitive `moved: true` proposal marker in the source scope and creates the live
@@ -414,8 +416,12 @@ The target models are:
 Alternative IDs are unique within each request and durable Decision.
 `recommended_option` and `selected_option` must equal exactly one submitted
 alternative ID. A non-null `corrected_choice` must equal one alternative ID on
-the referenced Decision or submitted proposal. Unknown or duplicate IDs fail
-with `invalid_request` before engine use or mutation.
+the referenced Decision or submitted proposal, or the ID of the supplied
+`new_alternative`. A new alternative ID must not collide with an existing one;
+when supplied, `corrected_choice` must equal its ID. It is stored on the
+Correction and added to the Decision's considered choices when the correction
+is applied. Unknown, mismatched, or duplicate IDs fail with `invalid_request`
+before engine use or mutation.
 
 ## State and Safety
 
@@ -475,11 +481,10 @@ Do not publish the Skill until:
   mappings and removes their verifiers and cached results;
 - forget race tests cover readers that precede the deletion linearization point
   and deterministic barrier acquisition for cross-scope dependencies;
-- scope tests prove only an explicitly selected, reference-closed record set
-  moves atomically, source replay markers prevent delayed recreation, target
-  UUID and proposal collisions fail before mutation, proposal mappings cannot
-  recreate or expose moved Decisions, and incomplete selections fail without
-  mutation;
+- scope tests prove explicitly selected roots and their server-expanded closure
+  move atomically, including closures over 100 records; source replay markers
+  prevent delayed recreation, target UUID and proposal collisions fail before
+  mutation, and proposal mappings cannot recreate or expose moved Decisions;
 - multi-scope response tests require complete, canonical `affected_scopes`, and
   scope replay tests cover unchanged targets, later moves, and forgetting;
 - effective-scope tests cover project-plus-global reads, paused-scope exclusion,
@@ -491,7 +496,8 @@ Do not publish the Skill until:
   tampered cursors, and generation changes between pages;
 - trigger and non-trigger prompts pass fresh-agent tests;
 - provenance and alternative-reference tests cover inferred evidence priority,
-  duplicate IDs, and every recommendation, selection, and correction path;
+  duplicate IDs, explicit-log constraints, new correction alternatives, and
+  every recommendation, selection, and correction path;
 - an end-to-end test covers natural observation, decision, correction reason,
   and a changed later decision;
 - documentation clearly distinguishes implemented behavior from target design.
