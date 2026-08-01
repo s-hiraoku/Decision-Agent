@@ -331,8 +331,9 @@ Command-specific `input` fields are:
   one. The command merges supplied values with that Correction. When both the
   resulting corrected choice and reason are known it becomes `applied`; a
   reason without a choice makes it `explained`; a choice without a reason may
-  update the Decision but leaves the Correction `unresolved` so the reason can
-  be attached later. The first non-null corrected choice also atomically creates
+  guide future decisions but leaves the Correction `unresolved` so the reason
+  can be attached later. It never rewrites the linked Decision's historical
+  selection, actor, status, rationale, or evidence. The first non-null corrected choice also atomically creates
   one linked, active, narrowly scoped choice Signal whose provenance is the
   Correction ID; it records the explicit choice without inventing a reason, and
   idempotent resolution never duplicates it. At least one of `reason` or
@@ -515,7 +516,9 @@ state is active.
 
 `memory scope` moves records; it does not change a client default, copy records,
 or change unrelated records. Every root must belong to the envelope scope and
-the target must differ. The server expands those roots to the complete
+the target must differ. A global source cannot target a project scope; that
+request fails with `invalid_request` before closure expansion because global
+evidence may support multiple projects. The server expands valid roots to the complete
 referential closure, including any number of linked records, proposal mappings,
 operation metadata, and prior move-lineage markers; callers never enumerate
 internal state or the full closure. Under every discovered lineage, source, and
@@ -589,6 +592,12 @@ The target models are:
 Every `created_at` above is an immutable UTC timestamp assigned at record
 creation and forms the universal list ordering key with the record ID.
 
+A Decision's alternatives, selected option, actor, status, rationale, evidence,
+confidence, constraints, and unresolved uncertainties are immutable historical
+facts after creation. Later Corrections and outcome Signals are linked records;
+they do not rewrite those fields. `applied` means the Correction affects future
+decision behavior, not that the original Decision is retroactively changed.
+
 Signal status is `candidate`, `active`, or `retired`. `observe` creates direct
 `user_statement` and `user_action` evidence as `active`, but creates
 `agent_inference` as `candidate`; candidate Signals are inspectable but cannot
@@ -631,11 +640,10 @@ alternative ID. A non-null `corrected_choice` must equal one alternative ID on
 the referenced Decision or submitted proposal, or the ID of the supplied
 `new_alternative`. A new alternative ID must not collide with an existing one;
 when supplied, `corrected_choice` must equal its ID. It is stored on the
-Correction and, whenever that choice updates the Decision, the new alternative
-is added to the Decision's considered choices in the same transaction regardless
-of whether the Correction remains `unresolved` or becomes `applied`. Unknown,
-mismatched, or duplicate IDs fail with `invalid_request` before engine use or
-mutation.
+Correction together with the complete `new_alternative`; the immutable original
+Decision is not changed. A later Decision may include that alternative when the
+linked choice Signal is reused. Unknown, mismatched, or duplicate IDs fail with
+`invalid_request` before engine use or mutation.
 
 ## State and Safety
 
@@ -702,8 +710,8 @@ Do not publish the Skill until:
   choice before becoming terminal;
 - choice-only correction tests create exactly one linked active Signal, reuse it
   in the next comparable decision, never invent a reason or broad Policy,
-  reject later choice replacement, and atomically add a supplied new alternative
-  even while the Correction remains unresolved;
+  reject later choice replacement, retain a supplied new alternative on the
+  Correction, and never rewrite the original Decision;
 - correction target tests reject foreign Decision, Correction, and proposal IDs
   before engine use or mutation while accepting same-scope global targets;
 - outcome tests create a Decision-linked outcome Signal atomically and prove
@@ -740,6 +748,7 @@ Do not publish the Skill until:
   prevent delayed recreation, target UUID and proposal collisions fail before
   mutation, paused source or target scopes reject the move, and proposal
   mappings cannot recreate or expose moved Decisions;
+- scope validation rejects every global-to-project move before closure expansion;
 - scope closure tests prove global evidence is locked and revalidated but never
   moved or traversed, foreign-project evidence fails before mutation, and a
   global Policy cannot directly reference project provenance;
