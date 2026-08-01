@@ -235,10 +235,12 @@ input fields are rejected.
 Command-specific `input` fields are:
 
 - `observe`: `kind` (`choice`, `rejection`, `constraint`, `tradeoff`, `example`,
-  or `reason`), `summary`, `provenance` (`source: "user"` plus opaque
-  `reference`), and `confidence`;
+  or `reason`), `summary`, `provenance` (`source` is `user_statement`,
+  `user_action`, or `agent_inference`, plus opaque `reference`), and
+  `confidence`; inferred provenance must reference its user-authored basis and
+  remains lower-priority evidence that cannot directly activate a Policy;
 - `decide`: `context`, two or more `alternatives` (`id`, `label`, optional
-  `details`), and optional `constraints` string array;
+  `details`) with unique IDs, and optional `constraints` string array;
 - `log`: `selected_option`, `actor` (`user` or `agent`), `status` (`confirmed`,
   `executed`, or `rejected`), `rationale`, `evidence_ids` string array,
   `confidence`, and either a complete `proposal` object or both `context` and
@@ -321,6 +323,12 @@ Every `observe`, `log`, `correct`, and mutating `memory` request includes a
 caller-generated `operation_id` (UUID) that is stable across retries of one
 logical operation. The idempotency identity is `(scope, command, operation_id)`:
 
+The compared canonical mutation payload is the filtered command-specific
+`input` plus any expected-generation fields, serialized with RFC 8785 JSON
+Canonicalization Scheme rules. It excludes `request_id`, `operation_id`, JSON
+member order, whitespace, and other per-attempt transport metadata. A retry may
+use a fresh `request_id`; changing any compared semantic field is a conflict.
+
 - the same identity and canonical request payload returns the original result
   with `replayed: true` and creates no additional record;
 - the same identity with a different canonical payload returns a conflict and
@@ -383,6 +391,12 @@ The target models are:
   is nullable for a pure rejection; the status remains `unresolved` while the
   reusable replacement or reason is unknown.
 
+Alternative IDs are unique within each request and durable Decision.
+`recommended_option` and `selected_option` must equal exactly one submitted
+alternative ID. A non-null `corrected_choice` must equal one alternative ID on
+the referenced Decision or submitted proposal. Unknown or duplicate IDs fail
+with `invalid_request` before engine use or mutation.
+
 ## State and Safety
 
 Store personal decision data outside the installed Skill. Resolve state in this
@@ -419,6 +433,8 @@ Do not publish the Skill until:
 - timed-out mutation retries deduplicate by `operation_id`, payload conflicts
   fail closed before forgetting, and any reuse of a forgotten operation identity
   returns only the terminal marker without recreating memory;
+- idempotency canonicalization tests vary request IDs, member order, whitespace,
+  and semantic fields to distinguish replay from conflict;
 - immediate proposal rejection atomically creates one rejected Decision and one
   linked Correction, and concurrent proposal consumption by `log` or `correct`
   creates no duplicate Decision across different operation IDs or after its
@@ -449,6 +465,8 @@ Do not publish the Skill until:
 - list pagination tests cover stable ordering, bounds, filters, paused output,
   tampered cursors, and generation changes between pages;
 - trigger and non-trigger prompts pass fresh-agent tests;
+- provenance and alternative-reference tests cover inferred evidence priority,
+  duplicate IDs, and every recommendation, selection, and correction path;
 - an end-to-end test covers natural observation, decision, correction reason,
   and a changed later decision;
 - documentation clearly distinguishes implemented behavior from target design.
