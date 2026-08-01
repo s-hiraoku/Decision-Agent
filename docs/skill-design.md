@@ -137,8 +137,9 @@ that reveal their content, or other personal memory while paused. Resume uses
 the same barrier and affects only later operations, so no personal memory is
 stored, returned, or applied between the pause and resume acknowledgements.
 Pause state takes precedence over ordinary mutation replay: while paused, a
-retry of `observe`, `log`, or `correct` returns only a non-sensitive `paused`
-error and never a cached result. The operation remains replayable after resume.
+retry of `observe`, `log`, `correct`, or `memory scope` returns only a non-
+sensitive `paused` error and never a cached result or location map. The
+operation remains replayable after resume.
 
 For a project-scoped `decide` or `explain`, the effective scope set is that
 project plus the user's global scope; a global request uses only global scope.
@@ -367,6 +368,15 @@ terminal forgotten rule instead of returning a partial location map. A caller
 must issue a new control operation with a new operation ID and freshly read
 generations.
 
+Pause takes precedence over the stale-control envelope. If any scope
+participating in a scope move or its lineage replay is paused, the response is
+exactly `ok: false`, has `replayed: true` only for a replay, has no `result`,
+`affected_scopes`, `control`, locations, record IDs, or record counts, and uses
+`error: {"code":"paused","message":"paused","retryable":false}`; it exits 3.
+It may include only the original envelope scope and its non-sensitive current
+generation. After every participating scope resumes, the operation may be
+retried under freshly acquired barriers.
+
 The existing `decision-agent decide <profile> <request>` and `train` commands
 remain the frozen numeric MVP and keep their positional-file contract. The
 published Skill uses only `agent-v1`; a future incompatible agent contract gets
@@ -423,8 +433,10 @@ referential closure, including any number of linked records, proposal mappings,
 operation metadata, and prior move-lineage markers; callers never enumerate
 internal state or the full closure. Under every discovered lineage, source, and
 target barrier, the command revalidates the closure, compares the supplied
-source and target generations, then atomically rewrites the scope of the full
-closure. Original operation identities are never re-keyed into the target scope:
+source and target generations, and verifies that every source and target scope
+is active before atomically rewriting the scope of the full closure. A paused
+scope returns the exact paused envelope above and moves nothing. Original
+operation identities are never re-keyed into the target scope:
 each becomes a non-
 sensitive `moved: true` terminal marker in the source scope, and moved records
 retain an internal provenance pointer to that marker. A delayed original retry
@@ -581,13 +593,15 @@ Do not publish the Skill until:
 - scope tests prove explicitly selected roots and their server-expanded closure
   move atomically, including closures over 100 records; source replay markers
   prevent delayed recreation, target UUID and proposal collisions fail before
-  mutation, and proposal mappings cannot recreate or expose moved Decisions;
+  mutation, paused source or target scopes reject the move, and proposal
+  mappings cannot recreate or expose moved Decisions;
 - scope closure tests prove global evidence is locked and revalidated but never
   moved or traversed, and foreign-project evidence fails before mutation;
 - multi-scope response tests require complete, canonical `affected_scopes`, and
   scope replay tests cover unchanged targets, later moves, split destinations,
   and forgetting; split-destination tests require every live record from the
-  original closure exactly once in the canonical `locations` map;
+  original closure exactly once in the canonical `locations` map, while any
+  paused destination suppresses that map and all record counts;
 - moved operation and proposal retry tests require the exact terminal `moved`
   envelope and prove that it reveals no target scope or record content;
 - proposal/log/model conformance tests preserve unresolved uncertainties, and
