@@ -50,21 +50,23 @@ Do not invoke for:
 
 ## Workflow
 
-### Filter before every persistence mutation
+### Filter before persistence or engine use
 
 Before `observe`, `log`, `correct`, or a mutating `memory` operation persists
-anything, run the same sensitive-data filter over every stored field, including
-decision context, alternatives, rationale, corrections, and user-provided
-reasons:
+anything, and before `decide` sends any input to a local or remote decision
+engine, run the same sensitive-data filter over every stored or transmitted
+field, including decision context, alternatives, rationale, corrections, and
+user-provided reasons:
 
 - remove raw conversation or artifact text that is not needed by the decision;
 - redact incidental credentials, API tokens, private keys, session cookies, and
   complete payment or government identifiers with a category placeholder;
-- reject the whole mutation when redaction would leave no useful decision
-  meaning, or when highly sensitive personal data has no deliberately
+- reject the mutation or decision request when redaction would leave no useful
+  decision meaning, or when highly sensitive personal data has no deliberately
   configured scope;
 - do not persist rejected content, a content hash, or the rejected secret value;
-  return only a non-sensitive rejection category.
+  do not send it to the decision engine; return only a non-sensitive rejection
+  category.
 
 ### Observe
 
@@ -76,10 +78,11 @@ directly into active policy.
 
 ### Decide
 
-Before a material choice, send the context and alternatives to Decision Agent.
-Use the returned recommendation and evidence to decide when the task is already
-delegated; otherwise present it as a proposal. Explain the result concisely and
-distinguish an agent decision from a user-confirmed decision.
+Before a material choice, apply the shared filter and send only the passing,
+minimized context and alternatives to Decision Agent. Use the returned
+recommendation and evidence to decide when the task is already delegated;
+otherwise present it as a proposal. Explain the result concisely and distinguish
+an agent decision from a user-confirmed decision.
 
 ### Log
 
@@ -111,11 +114,13 @@ re-derived or redacted; if they cannot remain meaningful without that evidence,
 they are deleted. Forgetting a Decision also removes its linked Corrections.
 Retrieval and export must exclude the selected IDs, dependent records, and
 derived content as soon as forgetting starts, with no dangling references. An
-interrupted compaction resumes before the scope is available again. A non-
-sensitive operation ID and payload digest may remain only to prevent a timed-out
-retry from recreating forgotten data. The current CLI has no `memory forget`
-command and still has dual profile/JSONL persistence, so this behavior is a
-release blocker rather than a claim about today's implementation.
+interrupted compaction resumes before the scope is available again. Only a non-
+sensitive operation ID and terminal `forgotten` replay marker may remain to
+prevent a timed-out retry from recreating forgotten data; remove the canonical
+payload and its digest so retained state cannot test guesses about forgotten
+content. The current CLI has no `memory forget` command and still has dual
+profile/JSONL persistence, so this behavior is a release blocker rather than a
+claim about today's implementation.
 
 ## Target CLI Contract
 
@@ -199,7 +204,8 @@ Do not publish the Skill until:
   fail closed, and retries after forgetting do not recreate memory;
 - sensitive-data filtering and hard-deletion tests prove rejected or forgotten
   content and all dependent or derived content are absent from retrieval and
-  exports;
+  exports, rejected decision inputs never reach an engine, and forgotten
+  payload digests are removed;
 - trigger and non-trigger prompts pass fresh-agent tests;
 - an end-to-end test covers natural observation, decision, correction reason,
   and a changed later decision;
