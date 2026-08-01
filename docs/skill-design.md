@@ -100,7 +100,11 @@ that changed. Keep unexplained corrections unresolved rather than inventing a
 reason. When the user rejects an unlogged `decide` proposal, submit the returned
 proposal ID and proposal fields with `correct`; after the shared filter passes,
 that one mutation atomically creates a `Decision` with `rejected` status and its
-linked `Correction`. A retry replays both records under the same `operation_id`
+linked `Correction`, plus a unique proposal-consumption mapping. Concurrent
+`correct` calls for the same proposal serialize on that proposal ID: an
+identical filtered correction returns the existing pair, while a different
+payload conflicts and must target the resulting Decision ID as a later,
+separate correction. A retry replays both records under the same `operation_id`
 or creates neither.
 
 ### Inspect and forget
@@ -109,13 +113,16 @@ Use the tool to show applicable memory when the user asks why a choice was made,
 what has been learned, or what will be reused. Honor pause, scope changes, and
 forget requests without requiring manual JSON editing.
 
-`memory pause` is scoped and acquires that scope's mutation lock. Operations
-that acquired the lock first finish before pause succeeds; after the pause
-acknowledgement, `observe`, `log`, `correct`, and other non-control mutations in
-that scope fail closed, and `decide` and `explain` neither retrieve nor apply its
-memory. `memory list`, `forget`, and an explicit scoped `resume` remain
-available. Resume takes the same lock and affects only later operations, so no
-personal memory is stored or used between the pause and resume acknowledgements.
+Every command that stores, retrieves, or applies memory participates in a scoped
+read/write barrier. `decide`, `explain`, and other readers hold a shared lease
+through their last use and response construction; mutations hold an exclusive
+lease. `memory pause` takes the exclusive lease and drains earlier readers and
+writers before it succeeds. After the pause acknowledgement, `observe`, `log`,
+`correct`, and other non-control mutations in that scope fail closed, and
+`decide` and `explain` neither retrieve nor apply its memory. `memory list`,
+`forget`, and an explicit scoped `resume` remain available. Resume uses the same
+barrier and affects only later operations, so no personal memory is stored,
+returned, or applied between the pause and resume acknowledgements.
 
 The target `memory forget` operation is a hard deletion, not a permanent
 tombstone containing the forgotten data. Under the scope lock, it atomically
@@ -124,6 +131,10 @@ and follows provenance and record links through all dependent memory. Policies,
 Decisions, and Corrections that contain or derive from forgotten evidence are
 re-derived or redacted; if they cannot remain meaningful without that evidence,
 they are deleted. Forgetting a Decision also removes its linked Corrections.
+For every deleted, redacted, or re-derived record, forget also replaces each
+affected operation entry with the terminal `forgotten` marker and removes its
+original payload, digest, result identity, and cached result; replay can never
+return a pre-forget representation even when a sanitized record survives.
 Retrieval and export must exclude the selected IDs, dependent records, and
 derived content as soon as forgetting starts, with no dangling references. An
 interrupted compaction resumes before the scope is available again. Only a non-
@@ -158,8 +169,9 @@ a new namespace instead of silently changing existing scripts.
 It returns a proposal ID and the filtered proposal fields needed for an atomic
 `correct` if the proposal is immediately rejected; the proposal ID alone is not
 a durable Decision. All responses include a contract version and machine-
-readable IDs. Mutation commands lock the relevant state scope against concurrent
-agents.
+readable IDs. Commands that store, retrieve, or apply memory use the relevant
+scope's read/write barrier; proposal consumption also uses a unique proposal-ID
+constraint.
 
 Every `observe`, `log`, `correct`, and mutating `memory` request includes a
 caller-generated `operation_id` (UUID) that is stable across retries of one
@@ -222,13 +234,16 @@ Do not publish the Skill until:
   fail closed before forgetting, and any reuse of a forgotten operation identity
   returns only the terminal marker without recreating memory;
 - immediate proposal rejection atomically creates one rejected Decision and one
-  linked Correction, and retry tests prove it creates no duplicates;
+  linked Correction, and concurrent same-proposal tests prove it creates no
+  duplicates across different operation IDs;
 - scoped pause concurrency tests prove no memory is stored, retrieved, or
-  applied after pause succeeds and before resume succeeds;
+  applied after pause succeeds and before resume succeeds, including reads that
+  began before pause;
 - sensitive-data filtering and hard-deletion tests prove rejected or forgotten
   content and all dependent or derived content are absent from retrieval and
   exports, rejected decision inputs never reach an engine, and forgotten
-  payload digests are removed;
+  payload digests, cached results, and replay metadata for every affected record
+  are removed or terminalized;
 - trigger and non-trigger prompts pass fresh-agent tests;
 - an end-to-end test covers natural observation, decision, correction reason,
   and a changed later decision;
