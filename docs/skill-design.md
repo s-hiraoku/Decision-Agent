@@ -238,10 +238,13 @@ input fields are rejected.
 Command-specific `input` fields are:
 
 - `observe`: `kind` (`choice`, `rejection`, `constraint`, `tradeoff`, `example`,
-  or `reason`), `summary`, `provenance` (`source` is `user_statement`,
+  `reason`, or `outcome`), `summary`, `provenance` (`source` is `user_statement`,
   `user_action`, or `agent_inference`, plus opaque `reference`), and
-  `confidence`; inferred provenance must reference its user-authored basis and
-  remains lower-priority evidence that cannot directly activate a Policy;
+  `confidence`, plus nullable `decision_id`; `decision_id` is required exactly
+  for `outcome`. An outcome observation atomically creates the linked Signal and
+  appends its ID to the Decision's outcome links. Inferred provenance must
+  reference its user-authored basis and remains lower-priority evidence that
+  cannot directly activate a Policy;
 - `decide`: `context`, two or more `alternatives` (`id`, `label`, optional
   `details`) with unique IDs, and optional `constraints` string array;
 - `log`: `selected_option`, `actor` (`user` or `agent`), `status` (`confirmed`
@@ -252,7 +255,10 @@ Command-specific `input` fields are:
   unresolved uncertainties must match the top-level values; the two forms are
   mutually exclusive. Rejection is
   accepted only by `correct`, which atomically creates the linked Correction.
-  The explicit non-proposal form also accepts optional `constraints`;
+  The explicit non-proposal form also accepts optional `constraints`. For a
+  proposal-backed log, `selected_option` must equal `recommended_option`; a
+  mismatch fails with `invalid_request` without consuming the proposal and must
+  be submitted through proposal-based `correct` as an override;
 - `correct`: nullable `decision_id`, nullable `correction_id`, nullable
   `proposal` (`proposal_id`, `context`, `alternatives`, `recommended_option`,
   `rationale`, `evidence_ids`, `confidence`, optional `constraints`, optional
@@ -446,13 +452,13 @@ record pagination fields and returns only the control metadata defined above.
 
 The target models are:
 
-- `Signal`: kind, summary, provenance, scope, confidence, status, `created_at`
-  and any other lifecycle timestamps;
+- `Signal`: kind, summary, provenance, optional linked Decision ID, scope,
+  confidence, status, `created_at`, and any other lifecycle timestamps;
 - `Policy`: text, scope, supporting and contradicting signal IDs, status,
-  `created_at`;
+  supporting and contradicting Correction IDs, and `created_at`;
 - `Decision`: context, alternatives, selected option, actor, scope, status,
   rationale, evidence IDs, confidence, optional constraints, unresolved
-  uncertainties, and `created_at`;
+  uncertainties, outcome Signal IDs, and `created_at`;
 - `Correction`: decision ID, corrected choice, nullable reason, scope, status
   (`unresolved`, `explained`, or `applied`), resulting changes, and
   `created_at`. Corrected choice
@@ -461,6 +467,15 @@ The target models are:
 
 Every `created_at` above is an immutable UTC timestamp assigned at record
 creation and forms the universal list ordering key with the record ID.
+
+A proposal-based `correct` always records the immediately rejected Decision
+with the proposal's `recommended_option`, `actor: "agent"`, and
+`status: "rejected"`; the Correction carries the user's replacement and reason
+when known. The operation does not attribute the proposal recommendation or its
+rationale to the user. When a Correction reason
+activates or changes a Policy, that Policy must include the Correction ID in its
+supporting or contradicting Correction links so provenance traversal, explain,
+and forget can find it.
 
 Alternative IDs are unique within each request and durable Decision.
 `recommended_option` and `selected_option` must equal exactly one submitted
@@ -515,8 +530,13 @@ Do not publish the Skill until:
   linked Correction, and concurrent proposal consumption by `log` or `correct`
   creates no duplicate Decision across different operation IDs or after its
   terminal proposal marker is forgotten;
+- proposal-backed log rejects a selected/recommended mismatch without consuming
+  the proposal, while proposal-based correct records the rejected recommendation
+  with a fixed agent actor and never attributes its rationale to the user;
 - unresolved-correction tests target `correction_id` and prove later reasons or
   replacements transition that exact record without creating duplicates;
+- outcome tests create a Decision-linked outcome Signal atomically and prove
+  explain, scope movement, and forget follow the bidirectional provenance;
 - scoped pause concurrency tests prove no memory is stored, retrieved, or
   applied after pause succeeds and before resume succeeds, including reads that
   began before pause;
@@ -547,6 +567,9 @@ Do not publish the Skill until:
   envelope and prove that it reveals no target scope or record content;
 - proposal/log/model conformance tests preserve unresolved uncertainties, and
   every listable record type supplies immutable `created_at` for stable paging;
+- correction-derived Policy tests require durable Correction evidence links and
+  prove dependent policies are removed or re-derived when that provenance is
+  forgotten;
 - effective-scope tests cover project-plus-global reads, paused-scope exclusion,
   canonical multi-scope leasing, the `consulted_scopes` wire field, and reported
   generations;
