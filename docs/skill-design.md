@@ -337,7 +337,10 @@ Command-specific `input` fields are:
   Correction ID; it records the explicit choice without inventing a reason, and
   idempotent resolution never duplicates it. At least one of `reason` or
   `corrected_choice` is required with `correction_id`; only `applied` is terminal
-  and cannot be resolved again.
+  and cannot be resolved again. Once a Correction has a non-null corrected
+  choice, later resolution may omit it or repeat the same ID but cannot replace
+  it; a different choice returns `invalid_request` before changing the
+  Correction, Decision, or linked Signal.
   Proposal-based `correct` applies the same full canonical proposal-digest check
   as proposal-backed `log` before validating or storing the correction. The
   digest covers context, ordered alternatives and their complete fields,
@@ -628,9 +631,11 @@ alternative ID. A non-null `corrected_choice` must equal one alternative ID on
 the referenced Decision or submitted proposal, or the ID of the supplied
 `new_alternative`. A new alternative ID must not collide with an existing one;
 when supplied, `corrected_choice` must equal its ID. It is stored on the
-Correction and added to the Decision's considered choices when the correction
-is applied. Unknown, mismatched, or duplicate IDs fail with `invalid_request`
-before engine use or mutation.
+Correction and, whenever that choice updates the Decision, the new alternative
+is added to the Decision's considered choices in the same transaction regardless
+of whether the Correction remains `unresolved` or becomes `applied`. Unknown,
+mismatched, or duplicate IDs fail with `invalid_request` before engine use or
+mutation.
 
 ## State and Safety
 
@@ -696,7 +701,9 @@ Do not publish the Skill until:
   choice-only changes remain resolvable, and explained records accept a later
   choice before becoming terminal;
 - choice-only correction tests create exactly one linked active Signal, reuse it
-  in the next comparable decision, and never invent a reason or broad Policy;
+  in the next comparable decision, never invent a reason or broad Policy,
+  reject later choice replacement, and atomically add a supplied new alternative
+  even while the Correction remains unresolved;
 - correction target tests reject foreign Decision, Correction, and proposal IDs
   before engine use or mutation while accepting same-scope global targets;
 - outcome tests create a Decision-linked outcome Signal atomically and prove
