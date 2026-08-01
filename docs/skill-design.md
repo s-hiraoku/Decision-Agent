@@ -288,9 +288,10 @@ Command-specific `input` fields are:
   `confidence`, plus nullable `decision_id`; `decision_id` is required exactly
   for `outcome`. An outcome observation atomically creates the linked Signal and
   appends its ID to the Decision's outcome links. That Decision must belong to
-  the envelope scope; a global or foreign-project target fails with
-  `evidence_conflict` before mutation, so this path holds only the envelope
-  scope's exclusive lease. Inferred provenance must
+  the envelope scope; any target outside it fails with `evidence_conflict`
+  before mutation, so a global envelope accepts a global Decision while a
+  project envelope rejects global and foreign-project targets. This path holds
+  only the envelope scope's exclusive lease. Inferred provenance must
   reference its user-authored basis and remains lower-priority evidence that
   cannot directly activate a Policy;
 - `decide`: `context`, two or more `alternatives` (`id`, `label`, optional
@@ -318,9 +319,11 @@ Command-specific `input` fields are:
   required, and either correction field may be null for a pure rejection. A
   `decision_id` must name a Decision in the envelope scope, `correction_id` must
   name an unresolved Correction there, and a proposal must have been issued in
-  that scope; a global or foreign-project target fails with `evidence_conflict`
-  before leases, engine use, or mutation. A `correction_id` resolves that record
-  rather than creating another one. The command merges
+  that scope; any target outside the envelope fails with `evidence_conflict`
+  before leases, engine use, or mutation. A global envelope therefore accepts
+  global targets, while a project envelope rejects global and foreign-project
+  targets. A `correction_id` resolves that record rather than creating another
+  one. The command merges
   supplied values with that Correction: if the resulting corrected choice is
   known it becomes `applied`; otherwise, a newly supplied reason makes it
   `explained`. At least one of `reason` or `corrected_choice` is required with
@@ -680,10 +683,11 @@ Do not publish the Skill until:
 - unresolved-correction tests target `correction_id` and prove later reasons or
   replacements transition that exact record without creating duplicates;
 - correction target tests reject foreign Decision, Correction, and proposal IDs
-  before engine use or mutation;
+  before engine use or mutation while accepting same-scope global targets;
 - outcome tests create a Decision-linked outcome Signal atomically and prove
   explain, scope movement, and forget follow the bidirectional provenance;
-  global and foreign-project Decision IDs fail before mutation;
+  same-scope global Decisions succeed, while every cross-scope ID fails before
+  mutation;
 - scoped pause concurrency tests prove no memory is stored, retrieved, or
   applied after pause succeeds and before resume succeeds, including reads that
   began before pause;
