@@ -170,7 +170,13 @@ explain whether global or project memory influenced the result. `memory list`
 remains limited to the single envelope scope unless the caller makes separate
 requests.
 
-`decide` first evaluates under shared leases for its effective scopes and records
+For `decide`, the envelope scope is not optional evidence: if it is paused, the
+command returns the exact paused envelope before engine use or proposal
+issuance, even when another effective scope is active. Only non-envelope scopes
+may be skipped as paused evidence during the read phase.
+
+`decide` first verifies the envelope scope is active, then evaluates under
+shared leases for its effective scopes and records
 their generations, then releases those leases. To issue the proposal, it
 reacquires all scopes in canonical order with an exclusive envelope-scope lease
 and shared leases for the other consulted scopes. It revalidates pause state,
@@ -195,8 +201,8 @@ The target `memory forget` operation is a hard deletion, not a permanent
 tombstone containing the forgotten data. Forget and scope-changing operations
 compute the provenance closure of affected scopes, acquire every scope's write
 barrier in canonical scope-key order, then revalidate the closure and retry if
-it expanded. This prevents deadlocks and covers dependencies such as a project
-Signal supporting a global Policy.
+it expanded. This prevents deadlocks and covers dependencies such as a global
+Signal supporting project Policies.
 
 Deletion linearizes only after every required write barrier is acquired. Readers
 that already hold a shared lease may finish before that point; afterward no
@@ -517,13 +523,14 @@ moves the global record or traverses its reverse dependents. Evidence from any
 other project is invalid for the target effective scope and fails with
 `scope_dependency_conflict` before mutation.
 
-A global reverse dependent of a project record, such as a global Policy
-supported by the moved Signal, is also an external dependency rather than a
-move-closure member. The server acquires that global scope's shared lease and
-revalidates the dependent and its reference through commit, but neither moves
-the global record nor traverses onward through its dependents. The opaque record
-ID remains stable across the project move, so the reference remains valid at the
-new project scope.
+Global Policies may reference only global-scope Signals and Corrections. Project
+evidence must never be attached directly to a global Policy. Generalization
+requires a separate, deliberately global `observe` call containing a minimized,
+filtered summary and global-safe provenance without a project record ID; the
+resulting global Signal can then support the Policy. Consequently global
+`explain` can return the Policy's complete inspectable provenance entirely from
+its global effective scope, while project `explain` may additionally show local
+Policies that reference global evidence.
 
 For a moved proposal-backed Decision, the same transaction leaves a non-
 sensitive `moved: true` proposal marker in the source scope and creates the live
@@ -654,7 +661,9 @@ Do not publish the Skill until:
   cannot be consumed into duplicate Decisions; replay also suppresses the
   cached proposal when any consulted scope is paused;
 - concurrent decide tests prove evaluation snapshots are revalidated before an
-  exclusive, single-generation issuance commit with no lease upgrade deadlock;
+  exclusive, single-generation issuance commit with no lease upgrade deadlock,
+  and a paused envelope prevents engine use and issuance even when global memory
+  is active;
 - idempotency canonicalization tests vary request IDs, member order, whitespace,
   record-ID permutations, duplicates, and semantic arrays or fields to
   distinguish replay, validation failure, and conflict;
@@ -706,8 +715,10 @@ Do not publish the Skill until:
   mutation, paused source or target scopes reject the move, and proposal
   mappings cannot recreate or expose moved Decisions;
 - scope closure tests prove global evidence is locked and revalidated but never
-  moved or traversed, global reverse dependents are likewise locked but excluded
-  from the move closure, and foreign-project evidence fails before mutation;
+  moved or traversed, foreign-project evidence fails before mutation, and a
+  global Policy cannot directly reference project provenance;
+- global explain tests require every supporting record to be global-scope and
+  return complete filtered provenance without cross-project reads;
 - multi-scope response tests require complete, canonical `affected_scopes`, and
   scope replay tests cover unchanged targets, later moves, split destinations,
   and forgetting; split-destination tests require every live record from the
