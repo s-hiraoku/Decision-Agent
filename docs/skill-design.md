@@ -318,16 +318,17 @@ Command-specific `input` fields are:
   `reason`; exactly one of `decision_id`, `correction_id`, or `proposal` is
   required, and either correction field may be null for a pure rejection. A
   `decision_id` must name a Decision in the envelope scope, `correction_id` must
-  name an unresolved Correction there, and a proposal must have been issued in
-  that scope; any target outside the envelope fails with `evidence_conflict`
+  name an `unresolved` or `explained` Correction there, and a proposal must have
+  been issued in that scope; any target outside the envelope fails with `evidence_conflict`
   before leases, engine use, or mutation. A global envelope therefore accepts
   global targets, while a project envelope rejects global and foreign-project
   targets. A `correction_id` resolves that record rather than creating another
-  one. The command merges
-  supplied values with that Correction: if the resulting corrected choice is
-  known it becomes `applied`; otherwise, a newly supplied reason makes it
-  `explained`. At least one of `reason` or `corrected_choice` is required with
-  `correction_id`, and a terminal Correction cannot be resolved again.
+  one. The command merges supplied values with that Correction. When both the
+  resulting corrected choice and reason are known it becomes `applied`; a
+  reason without a choice makes it `explained`; a choice without a reason may
+  update the Decision but leaves the Correction `unresolved` so the reason can
+  be attached later. At least one of `reason` or `corrected_choice` is required
+  with `correction_id`; only `applied` is terminal and cannot be resolved again.
   Proposal-based `correct` applies the same full canonical proposal-digest check
   as proposal-backed `log` before validating or storing the correction. The
   digest covers context, ordered alternatives and their complete fields,
@@ -568,9 +569,10 @@ The target models are:
   uncertainties, outcome Signal IDs, and `created_at`;
 - `Correction`: decision ID, corrected choice, nullable reason, scope, status
   (`unresolved`, `explained`, or `applied`), resulting changes, and
-  `created_at`. Corrected choice
-  is nullable for a pure rejection; the status remains `unresolved` while the
-  reusable replacement or reason is unknown.
+  `created_at`. Corrected choice is nullable for a pure rejection. `unresolved`
+  means a reusable reason is still missing, even when the choice has already
+  changed; `explained` has a reason but no replacement choice, and `applied` has
+  both and is terminal.
 
 Every `created_at` above is an immutable UTC timestamp assigned at record
 creation and forms the universal list ordering key with the record ID.
@@ -682,6 +684,8 @@ Do not publish the Skill until:
   schema tests also reject duplicated explicit log fields in proposal mode;
 - unresolved-correction tests target `correction_id` and prove later reasons or
   replacements transition that exact record without creating duplicates;
+  choice-only changes remain resolvable, and explained records accept a later
+  choice before becoming terminal;
 - correction target tests reject foreign Decision, Correction, and proposal IDs
   before engine use or mutation while accepting same-scope global targets;
 - outcome tests create a Decision-linked outcome Signal atomically and prove
