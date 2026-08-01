@@ -103,7 +103,9 @@ decisions as corrections. If the user already gave a reason, do not ask again.
 If the reason is missing and material to reuse, ask one natural follow-up. Link
 the correction to the original decision and report the narrow future behavior
 that changed. Keep unexplained corrections unresolved rather than inventing a
-reason. When the user rejects an unlogged `decide` proposal, submit the returned
+reason. A pure rejection may leave both the replacement choice and reason
+unknown; store it as unresolved rather than requiring either value. When the
+user rejects an unlogged `decide` proposal, submit the returned
 proposal ID and proposal fields with `correct`; after the shared filter passes,
 that one mutation atomically creates a `Decision` with `rejected` status and its
 linked `Correction`, plus a unique proposal-consumption mapping shared with
@@ -148,6 +150,14 @@ Responses list every scope and generation actually consulted so callers can
 explain whether global or project memory influenced the result. `memory list`
 and export remain limited to the single envelope scope unless the caller makes
 separate requests.
+
+Before `log` or a proposal-based `correct` persists cross-scope `evidence_ids`,
+it computes every referenced scope, acquires the destination scope's exclusive
+lease and each other referenced scope's shared lease in canonical scope-key
+order, then revalidates that every evidence record is present, active, and in an
+allowed effective scope. Missing, paused, moved, or forgotten evidence returns
+`evidence_conflict` without mutation. This prevents a concurrent forget or scope
+move from creating dangling references.
 
 The target `memory forget` operation is a hard deletion, not a permanent
 tombstone containing the forgotten data. Forget and scope-changing operations
@@ -237,8 +247,9 @@ Command-specific `input` fields are:
   exclusive;
 - `correct`: nullable `decision_id`, nullable `proposal` (`proposal_id`,
   `context`, `alternatives`, `recommended_option`, `rationale`, `evidence_ids`,
-  `confidence`), `corrected_choice`, and nullable `reason`; exactly one of
-  `decision_id` or `proposal` is required;
+  `confidence`), nullable `corrected_choice`, and nullable `reason`; exactly one
+  of `decision_id` or `proposal` is required, and either correction field may be
+  null for a pure rejection;
 - `explain`: `target_type` (`decision` or `policy`) and `target_id`;
 - `memory`: `action` (`list`, `pause`, `resume`, `scope`, or `forget`); list
   accepts optional `limit` (1–100, default 50), nullable opaque `cursor`, and
@@ -258,18 +269,23 @@ Successful responses use this envelope:
   "request_id": "echoed caller UUID",
   "scope": {"kind": "project", "id": "stable opaque ID"},
   "generation": 5,
+  "consulted_scopes": [
+    {"scope": {"kind": "project", "id": "stable opaque ID"}, "generation": 5}
+  ],
   "result": {},
   "replayed": false
 }
 ```
 
-`scope` and `generation` are omitted only by `doctor`. Mutation results include
-created record IDs; `decide` returns `proposal_id`, filtered proposal fields,
-recommendation, evidence IDs, and confidence; `explain` and list return filtered
-records; a successful active list returns `items` in ascending `(created_at,
-id)` order and nullable `next_cursor`; memory controls return current state and
-generation. Replays set `replayed` and obey the pause, forget, and generation
-rules below.
+`scope` and `generation` are omitted only by `doctor`. `consulted_scopes` is a
+required array of `{scope, generation}` pairs for `decide` and `explain`, in
+canonical scope-key order, and omitted by other commands. Mutation results
+include created record IDs; `decide` returns `proposal_id`, filtered proposal
+fields, recommendation, evidence IDs, and confidence; `explain` and list return
+filtered records; a successful active list returns `items` in ascending
+`(created_at, id)` order and nullable `next_cursor`; memory controls return
+current state and generation. Replays set `replayed` and obey the pause, forget,
+and generation rules below.
 
 Errors after envelope validation use the same `contract`, `request_id`, and
 applicable scope metadata with `ok: false` and
@@ -279,8 +295,8 @@ missing common field, the server still emits one JSON error with
 UUID, and no scope metadata. Stable codes are
 `invalid_request`, `unsupported_contract`, `sensitive_rejected`, `paused`,
 `not_found`, `forgotten`, `operation_conflict`, `generation_conflict`,
-`scope_dependency_conflict`, `proposal_conflict`, `stale_cursor`,
-`stale_control`, and `runtime_unavailable`.
+`scope_dependency_conflict`, `proposal_conflict`, `evidence_conflict`,
+`stale_cursor`, `stale_control`, and `runtime_unavailable`.
 Validation and contract errors exit 2; state, idempotency, pause, scope, and
 generation conflicts exit 3; privacy rejection exits 4; missing or forgotten
 targets exit 5; runtime failure exits 6. Success, including safe replay, exits
@@ -363,7 +379,9 @@ The target models are:
 - `Decision`: context, alternatives, selected option, actor, scope, status,
   rationale, evidence IDs, confidence;
 - `Correction`: decision ID, corrected choice, nullable reason, scope, status
-  (`unresolved`, `explained`, or `applied`), resulting changes.
+  (`unresolved`, `explained`, or `applied`), resulting changes. Corrected choice
+  is nullable for a pure rejection; the status remains `unresolved` while the
+  reusable replacement or reason is unknown.
 
 ## State and Safety
 
@@ -424,7 +442,10 @@ Do not publish the Skill until:
   recreate or expose moved Decisions, and incomplete selections fail without
   mutation;
 - effective-scope tests cover project-plus-global reads, paused-scope exclusion,
-  canonical multi-scope leasing, and reported scope generations;
+  canonical multi-scope leasing, the `consulted_scopes` wire field, and reported
+  generations;
+- cross-scope mutation races prove `log` and proposal-based `correct` revalidate
+  evidence under all leases and never commit dangling references;
 - list pagination tests cover stable ordering, bounds, filters, paused output,
   tampered cursors, and generation changes between pages;
 - trigger and non-trigger prompts pass fresh-agent tests;
