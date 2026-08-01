@@ -148,10 +148,17 @@ the original idempotent operation, including proposal issuance, without
 retaining evidence content. Before replaying any such operation, the server
 acquires shared leases for that full participating set in canonical order,
 holds them through response construction, and revalidates pause state. If any
-participating scope is paused, the exact paused envelope takes precedence and no cached result,
-evidence, affected-scope metadata, location, record ID, or record count is
+participating scope is paused, the exact paused envelope takes precedence and no
+cached result, evidence, affected-scope metadata, location, record ID, or record count is
 returned. This includes project operations that read global evidence and replays
 of cross-scope forget.
+
+`pause` and `resume` replays are the exception to participating-scope pause
+precedence: they never return the generic paused envelope. They always use the
+generation-based control replay rules below, returning the original success
+while its resulting generation remains current and the exact `stale_control`
+envelope otherwise. This keeps a successful pause replayable while paused and
+lets an older resume report a later pause without exposing memory content.
 
 For a project-scoped `decide` or `explain`, the effective scope set is that
 project plus the user's global scope; a global request uses only global scope.
@@ -674,7 +681,7 @@ Do not publish the Skill until:
 - pause and resume replay tests require the exact `stale_control` envelope and
   current scope generation, prove ordinary cached mutation results stay hidden
   while paused, and prove paused list exposes only non-sensitive control
-  metadata;
+  metadata; control replays are explicitly exempt from generic pause precedence;
 - participating-scope replay tests pause global evidence or one affected forget
   scope and prove no cached result, evidence, scope list, ID, or count escapes;
 - sensitive-data filtering and hard-deletion tests prove rejected or forgotten
