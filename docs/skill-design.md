@@ -232,7 +232,7 @@ exactly one JSON object to stdout. The common request envelope is:
   "contract": "agent-v1",
   "request_id": "caller UUID",
   "scope": {"kind": "project", "id": "stable opaque ID"},
-  "operation_id": "caller UUID for mutations only",
+  "operation_id": "caller UUID for proposal issuance or mutations",
   "expected_generation": 4,
   "input": {}
 }
@@ -240,8 +240,9 @@ exactly one JSON object to stdout. The common request envelope is:
 
 `contract`, `request_id`, and `input` are always required. `scope` is required
 except for `doctor`; global scope is `{"kind":"global","id":"user"}`.
-`operation_id` is required only for `observe`, `log`, `correct`, and memory
-`pause`, `resume`, `scope`, or `forget`. `expected_generation` is required for
+`operation_id` is required only for `decide`, `observe`, `log`, `correct`, and
+memory `pause`, `resume`, `scope`, or `forget`. `expected_generation` is
+required for
 pause and resume; `scope` instead requires source `expected_generation` plus
 input `target_expected_generation`; forget omits it. Unknown fields or enum
 values fail validation. UUIDs use canonical RFC 4122 text, generations are
@@ -400,13 +401,14 @@ readable IDs. Commands that store, retrieve, or apply memory use the relevant
 scope's read/write barrier; proposal consumption also uses a unique proposal-ID
 constraint.
 
-Every `observe`, `log`, `correct`, and mutating `memory` request includes a
-caller-generated `operation_id` (UUID) that is stable across retries of one
-logical operation. The idempotency identity is `(scope, command, operation_id)`:
+Every `decide`, `observe`, `log`, `correct`, and mutating `memory` request
+includes a caller-generated `operation_id` (UUID) that is stable across retries
+of one logical operation. The idempotency identity is
+`(scope, command, operation_id)`:
 
-The compared canonical mutation payload is the filtered command-specific
-`input` plus any expected-generation fields, serialized with RFC 8785 JSON
-Canonicalization Scheme rules. It excludes `request_id`, `operation_id`, JSON
+The compared canonical idempotent-operation payload is the filtered command-
+specific `input` plus any expected-generation fields, serialized with RFC 8785
+JSON Canonicalization Scheme rules. It excludes `request_id`, `operation_id`, JSON
 member order, whitespace, and other per-attempt transport metadata. A retry may
 use a fresh `request_id`; changing any compared semantic field is a conflict.
 Before canonicalization, `record_ids` and `root_record_ids` are treated as
@@ -414,16 +416,19 @@ unordered sets: reject duplicates and sort by opaque ID. Semantic arrays such as
 `alternatives` retain their submitted order.
 
 - the same identity and canonical request payload returns the original result
-  with `replayed: true` and creates no additional record;
+  with `replayed: true` and creates no additional record or proposal; a retried
+  `decide` therefore returns the identical proposal ID and filtered proposal;
 - the same identity with a different canonical payload returns a conflict and
   performs no mutation while the original record exists;
 - after forgetting, the terminal `forgotten: true` result takes precedence for
   that identity regardless of the retry payload, because no payload verifier is
   retained; it performs no mutation and reveals no original result fields;
-- a timeout is retried with the same `operation_id`; a new logical observation,
-  decision, or correction always receives a new one;
+- a timeout is retried with the same `operation_id`; a new logical proposal,
+  observation, decision, or correction always receives a new one;
 - the operation ID, payload digest, and result identity are retained while the
-  mutation record exists. After forgetting, only the operation ID and a non-
+  mutation record or issued proposal exists. Proposal issuance metadata remains
+  bound to the proposal through consumption, movement, or forgetting. After
+  forgetting, only the operation ID and a non-
   sensitive terminal replay marker remain so a delayed retry cannot recreate
   deleted memory.
 
@@ -538,9 +543,13 @@ and forget can find it.
 global Policies are read-only external evidence during a project correction;
 the correction may create a narrower project Policy that supports or
 contradicts them, but it never rewrites the global record. Updating a global
-Policy requires a separate global-scoped evidence flow. The command discovers
-every envelope-scope Policy it will change before commit and holds that scope's
-exclusive lease through Correction and Policy persistence.
+Policy requires a separate global-scoped evidence flow. Every `correct` path,
+including Decision- and Correction-ID forms, discovers each applicable global
+Policy it reads, acquires its scope's shared lease in canonical order, and
+revalidates its active and paused state through commit. Those scopes are retained
+in the operation's participating set for replay suppression. The command also
+discovers every envelope-scope Policy it will change before commit and holds
+that scope's exclusive lease through Correction and Policy persistence.
 
 Alternative IDs are unique within each request and durable Decision.
 `recommended_option` and `selected_option` must equal exactly one submitted
@@ -588,6 +597,8 @@ Do not publish the Skill until:
 - timed-out mutation retries deduplicate by `operation_id`, payload conflicts
   fail closed before forgetting, and any reuse of a forgotten operation identity
   returns the exact terminal error envelope without recreating memory;
+- timed-out `decide` retries return exactly one proposal ID per operation and
+  cannot be consumed into duplicate Decisions;
 - idempotency canonicalization tests vary request IDs, member order, whitespace,
   record-ID permutations, duplicates, and semantic arrays or fields to
   distinguish replay, validation failure, and conflict;
@@ -646,6 +657,8 @@ Do not publish the Skill until:
   prove dependent policies are removed or re-derived when that provenance is
   forgotten; project corrections can create or change only project Policies and
   never mutate an applicable global Policy;
+- every correction form locks and revalidates global Policy evidence through
+  commit and records those scopes for pause-safe replay;
 - Signal and Policy lifecycle tests cover creation defaults, promotion,
   retirement, and exclusion of candidate or retired records from decisions and
   evidence references;
