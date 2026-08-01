@@ -56,9 +56,10 @@ Before `observe`, `log`, `correct`, or a mutating `memory` operation persists
 anything, and before `decide` sends any input to a local or remote decision
 engine, run the same sensitive-data filter over every stored or transmitted
 field. Before `decide`, `explain`, `memory list`, or export returns stored
-content, validate that each record belongs to the requested scope and run the
-filter again over every response field. Covered fields include decision context,
-alternatives, rationale, corrections, and user-provided reasons:
+content, validate that each record belongs to the command's effective scope set
+and run the filter again over every response field. Covered fields include
+decision context, alternatives, rationale, corrections, and user-provided
+reasons:
 
 - remove raw conversation or artifact text that is not needed by the decision;
 - redact incidental credentials, API tokens, private keys, session cookies, and
@@ -137,6 +138,16 @@ stored, returned, or applied between the pause and resume acknowledgements.
 Pause state takes precedence over ordinary mutation replay: while paused, a
 retry of `observe`, `log`, or `correct` returns only a non-sensitive `paused`
 error and never a cached result. The operation remains replayable after resume.
+
+For a project-scoped `decide` or `explain`, the effective scope set is that
+project plus the user's global scope; a global request uses only global scope.
+Readers acquire shared leases for every effective scope in canonical scope-key
+order and validate each returned record against that set. A paused participating
+scope contributes no records, while other active scopes may still contribute.
+Responses list every scope and generation actually consulted so callers can
+explain whether global or project memory influenced the result. `memory list`
+and export remain limited to the single envelope scope unless the caller makes
+separate requests.
 
 The target `memory forget` operation is a hard deletion, not a permanent
 tombstone containing the forgotten data. Forget and scope-changing operations
@@ -229,10 +240,13 @@ Command-specific `input` fields are:
   `confidence`), `corrected_choice`, and nullable `reason`; exactly one of
   `decision_id` or `proposal` is required;
 - `explain`: `target_type` (`decision` or `policy`) and `target_id`;
-- `memory`: `action` (`list`, `pause`, `resume`, `scope`, or `forget`); `forget`
+- `memory`: `action` (`list`, `pause`, `resume`, `scope`, or `forget`); list
+  accepts optional `limit` (1–100, default 50), nullable opaque `cursor`, and
+  optional `types` array containing `signal`, `policy`, `decision`, or
+  `correction`; `forget`
   requires a non-empty `record_ids` string array; `scope` requires `record_ids`,
-  `target_scope`, and `target_expected_generation`; list, pause, and resume take
-  no other fields;
+  `target_scope`, and `target_expected_generation`; pause and resume take no
+  other fields;
 - `doctor`: no fields.
 
 Successful responses use this envelope:
@@ -252,8 +266,10 @@ Successful responses use this envelope:
 `scope` and `generation` are omitted only by `doctor`. Mutation results include
 created record IDs; `decide` returns `proposal_id`, filtered proposal fields,
 recommendation, evidence IDs, and confidence; `explain` and list return filtered
-records; memory controls return current state and generation. Replays set
-`replayed` and obey the pause, forget, and generation rules below.
+records; a successful active list returns `items` in ascending `(created_at,
+id)` order and nullable `next_cursor`; memory controls return current state and
+generation. Replays set `replayed` and obey the pause, forget, and generation
+rules below.
 
 Errors after envelope validation use the same `contract`, `request_id`, and
 applicable scope metadata with `ok: false` and
@@ -263,7 +279,8 @@ missing common field, the server still emits one JSON error with
 UUID, and no scope metadata. Stable codes are
 `invalid_request`, `unsupported_contract`, `sensitive_rejected`, `paused`,
 `not_found`, `forgotten`, `operation_conflict`, `generation_conflict`,
-`scope_dependency_conflict`, `stale_control`, and `runtime_unavailable`.
+`scope_dependency_conflict`, `proposal_conflict`, `stale_cursor`,
+`stale_control`, and `runtime_unavailable`.
 Validation and contract errors exit 2; state, idempotency, pause, scope, and
 generation conflicts exit 3; privacy rejection exits 4; missing or forgotten
 targets exit 5; runtime failure exits 6. Success, including safe replay, exits
@@ -302,26 +319,42 @@ logical operation. The idempotency identity is `(scope, command, operation_id)`:
   sensitive terminal replay marker remain so a delayed retry cannot recreate
   deleted memory.
 
-Scoped control state has a monotonically increasing generation. `pause` and
-`resume` requests include the caller's expected generation and perform a compare-
-and-set under the write barrier. Their responses always include the current
-state and generation. Replaying either control operation re-reads that state: it
-returns the original success only while its resulting generation is still
-current; otherwise it returns `stale: true` with non-sensitive current control
-metadata and never claims that the old state is active.
+Scoped state has a monotonically increasing generation that advances on every
+committed data or control mutation. `pause` and `resume` requests include the
+caller's expected generation and perform a compare-and-set under the write
+barrier. Their responses always include the current state and generation.
+Replaying either control operation re-reads that state: it returns the original
+success only while its resulting generation is still current; otherwise it
+returns `stale: true` with non-sensitive current control metadata and never
+claims that the old state is active.
 
 `memory scope` moves records; it does not change a client default, copy records,
 or infer a selection. Every `record_id` must belong to the envelope scope, the
 target must differ, and the supplied set must be closed over links required for
-referential integrity. Under the source and target barriers, the command
-compares both expected generations, then atomically rewrites the scope of
-exactly those records. Original operation identities are never re-keyed into the
-target scope: each becomes a non-sensitive `moved: true` terminal marker in the
-source scope, and moved records retain an internal provenance pointer to that
-marker. A delayed original retry therefore cannot recreate the record, and an
-unrelated target-scope operation with the same UUID cannot collide. A non-closed
-selection fails with `scope_dependency_conflict` and non-sensitive missing
-record IDs, without moving anything.
+referential integrity, including proposal-consumption mappings. Under the source
+and target barriers, the command compares both expected generations, then
+atomically rewrites the scope of exactly those records. Original operation
+identities are never re-keyed into the target scope: each becomes a non-
+sensitive `moved: true` terminal marker in the source scope, and moved records
+retain an internal provenance pointer to that marker. A delayed original retry
+therefore cannot recreate the record, and an unrelated target-scope operation
+with the same UUID cannot collide. A non-closed selection fails with
+`scope_dependency_conflict` and non-sensitive missing record IDs, without moving
+anything.
+
+For a moved proposal-backed Decision, the same transaction leaves a non-
+sensitive `moved: true` proposal marker in the source scope and creates the live
+proposal-to-Decision mapping in the target. A delayed source `log` or `correct`
+returns only the moved marker; it never returns target content or recreates the
+Decision. Any existing target mapping for that proposal ID causes
+`proposal_conflict` before mutation.
+
+An active list cursor is an opaque, integrity-protected token bound to contract,
+scope, generation, type filter, and the last `(created_at, id)` key; it contains
+no record content. Pagination holds the shared lease only for one page. Reusing
+a cursor after the scope generation changes returns `stale_cursor`, requiring a
+restart, so a traversal never silently mixes snapshots. A paused list ignores
+record pagination fields and returns only the control metadata defined above.
 
 The target models are:
 
@@ -387,8 +420,13 @@ Do not publish the Skill until:
   and deterministic barrier acquisition for cross-scope dependencies;
 - scope tests prove only an explicitly selected, reference-closed record set
   moves atomically, source replay markers prevent delayed recreation, target
-  UUID collisions are impossible, and incomplete selections fail without
+  UUID and proposal collisions fail before mutation, proposal mappings cannot
+  recreate or expose moved Decisions, and incomplete selections fail without
   mutation;
+- effective-scope tests cover project-plus-global reads, paused-scope exclusion,
+  canonical multi-scope leasing, and reported scope generations;
+- list pagination tests cover stable ordering, bounds, filters, paused output,
+  tampered cursors, and generation changes between pages;
 - trigger and non-trigger prompts pass fresh-agent tests;
 - an end-to-end test covers natural observation, decision, correction reason,
   and a changed later decision;
