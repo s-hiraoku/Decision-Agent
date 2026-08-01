@@ -141,6 +141,16 @@ retry of `observe`, `log`, `correct`, or `memory scope` returns only a non-
 sensitive `paused` error and never a cached result or location map. The
 operation remains replayable after resume.
 
+Operation metadata retains the canonical set of every scope read or changed by
+the original mutation without retaining evidence content. Before replaying any
+mutation, the server acquires shared leases for that full participating set in
+canonical order, holds them through response construction, and revalidates
+pause state. If any participating scope is
+paused, the exact paused envelope takes precedence and no cached result,
+evidence, affected-scope metadata, location, record ID, or record count is
+returned. This includes project mutations that read global evidence and replays
+of cross-scope forget.
+
 For a project-scoped `decide` or `explain`, the effective scope set is that
 project plus the user's global scope; a global request uses only global scope.
 Readers acquire shared leases for every effective scope in canonical scope-key
@@ -452,6 +462,14 @@ moves the global record or traverses its reverse dependents. Evidence from any
 other project is invalid for the target effective scope and fails with
 `scope_dependency_conflict` before mutation.
 
+A global reverse dependent of a project record, such as a global Policy
+supported by the moved Signal, is also an external dependency rather than a
+move-closure member. The server acquires that global scope's shared lease and
+revalidates the dependent and its reference through commit, but neither moves
+the global record nor traverses onward through its dependents. The opaque record
+ID remains stable across the project move, so the reference remains valid at the
+new project scope.
+
 For a moved proposal-backed Decision, the same transaction leaves a non-
 sensitive `moved: true` proposal marker in the source scope and creates the live
 proposal-to-Decision mapping in the target. A delayed source `log` or `correct`
@@ -491,6 +509,21 @@ The target models are:
 
 Every `created_at` above is an immutable UTC timestamp assigned at record
 creation and forms the universal list ordering key with the record ID.
+
+Signal status is `candidate`, `active`, or `retired`. `observe` creates direct
+`user_statement` and `user_action` evidence as `active`, but creates
+`agent_inference` as `candidate`; candidate Signals are inspectable but cannot
+be cited or applied. Corroboration by an active user Signal or Correction may
+promote a candidate to active. Superseded evidence becomes retired and is never
+applied; reactivation creates a new record rather than rewriting its history.
+
+Policy status is `candidate`, `active`, or `retired`. A newly inferred Policy is
+candidate. It becomes active only from a sufficiently specific direct
+Correction with a known reason or corroboration by distinct active Signals;
+candidate Policies are inspectable but never applied. A later Correction may
+retire a candidate or active Policy. Only active Signals and Policies satisfy
+evidence validation or influence `decide`; Correction and Decision statuses use
+their separately defined lifecycles.
 
 A proposal-based `correct` always records the immediately rejected Decision
 with the proposal's `recommended_option`, `actor: "agent"`, and
@@ -579,6 +612,8 @@ Do not publish the Skill until:
   current scope generation, prove ordinary cached mutation results stay hidden
   while paused, and prove paused list exposes only non-sensitive control
   metadata;
+- participating-scope replay tests pause global evidence or one affected forget
+  scope and prove no cached result, evidence, scope list, ID, or count escapes;
 - sensitive-data filtering and hard-deletion tests prove rejected or forgotten
   content and all dependent or derived content are absent from retrieval, every
   returned field is scope-checked and filtered, rejected decision inputs never
@@ -596,7 +631,8 @@ Do not publish the Skill until:
   mutation, paused source or target scopes reject the move, and proposal
   mappings cannot recreate or expose moved Decisions;
 - scope closure tests prove global evidence is locked and revalidated but never
-  moved or traversed, and foreign-project evidence fails before mutation;
+  moved or traversed, global reverse dependents are likewise locked but excluded
+  from the move closure, and foreign-project evidence fails before mutation;
 - multi-scope response tests require complete, canonical `affected_scopes`, and
   scope replay tests cover unchanged targets, later moves, split destinations,
   and forgetting; split-destination tests require every live record from the
@@ -610,6 +646,9 @@ Do not publish the Skill until:
   prove dependent policies are removed or re-derived when that provenance is
   forgotten; project corrections can create or change only project Policies and
   never mutate an applicable global Policy;
+- Signal and Policy lifecycle tests cover creation defaults, promotion,
+  retirement, and exclusion of candidate or retired records from decisions and
+  evidence references;
 - effective-scope tests cover project-plus-global reads, paused-scope exclusion,
   canonical multi-scope leasing, the `consulted_scopes` wire field, and reported
   generations;
