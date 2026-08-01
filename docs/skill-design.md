@@ -143,14 +143,16 @@ retry of `decide`, `observe`, `log`, `correct`, or `memory scope` returns only a
 non-sensitive `paused` error and never a cached proposal, result, or location
 map. The operation remains replayable after resume.
 
-Operation metadata retains the canonical set of every scope read or changed by
-the original idempotent operation, including proposal issuance, without
-retaining evidence content. Before replaying any such operation, the server
-acquires shared leases for that full participating set in canonical order,
+Operation metadata retains the canonical set of every scope whose memory
+contributed to or was changed by the original idempotent operation, including
+proposal issuance, without retaining evidence content. A scope inspected only
+to learn that it was paused and skipped is not a participant. Before replaying
+any such operation, the server acquires shared leases for that full
+participating set in canonical order,
 holds them through response construction, and revalidates pause state. If any
 participating scope is paused, the exact paused envelope takes precedence and no
-cached result, evidence, affected-scope metadata, location, record ID, or record count is
-returned. This includes project operations that read global evidence and replays
+cached result, evidence, affected-scope metadata, location, record ID, or record
+count is returned. This includes project operations that read global evidence and replays
 of cross-scope forget.
 
 `pause` and `resume` replays are the exception to participating-scope pause
@@ -176,13 +178,16 @@ issuance, even when another effective scope is active. Only non-envelope scopes
 may be skipped as paused evidence during the read phase.
 
 `decide` first verifies the envelope scope is active, then evaluates under
-shared leases for its effective scopes and records
-their generations, then releases those leases. To issue the proposal, it
-reacquires all scopes in canonical order with an exclusive envelope-scope lease
-and shared leases for the other consulted scopes. It revalidates pause state,
-generations, evidence, and the filtered result; if any consulted generation
-changed, it releases the leases and reevaluates instead of committing stale
-output. Otherwise it atomically persists the proposal, verifier, digest, cached
+shared leases for its effective scopes and records the active consulted set,
+its generations, and the skipped paused set, then releases those leases. To
+issue the proposal, it reacquires all scopes in canonical order with an
+exclusive envelope-scope lease
+and shared inspection leases for the other effective scopes. It revalidates
+pause state, active/skipped membership, generations, evidence, and the filtered
+result; if membership or any consulted generation changed, it releases the
+leases and reevaluates instead of committing stale output. Otherwise it
+discards skipped scopes from participation and atomically persists the proposal,
+verifier, digest, cached
 result, idempotency metadata, and expiry, advances the envelope generation once,
 and holds the leases through response construction. Concurrent issuances
 therefore serialize without attempting an in-place shared-to-exclusive upgrade.
@@ -327,8 +332,12 @@ Command-specific `input` fields are:
   resulting corrected choice and reason are known it becomes `applied`; a
   reason without a choice makes it `explained`; a choice without a reason may
   update the Decision but leaves the Correction `unresolved` so the reason can
-  be attached later. At least one of `reason` or `corrected_choice` is required
-  with `correction_id`; only `applied` is terminal and cannot be resolved again.
+  be attached later. The first non-null corrected choice also atomically creates
+  one linked, active, narrowly scoped choice Signal whose provenance is the
+  Correction ID; it records the explicit choice without inventing a reason, and
+  idempotent resolution never duplicates it. At least one of `reason` or
+  `corrected_choice` is required with `correction_id`; only `applied` is terminal
+  and cannot be resolved again.
   Proposal-based `correct` applies the same full canonical proposal-digest check
   as proposal-backed `log` before validating or storing the correction. The
   digest covers context, ordered alternatives and their complete fields,
@@ -560,7 +569,7 @@ record pagination fields and returns only the control metadata defined above.
 
 The target models are:
 
-- `Signal`: kind, summary, provenance, optional linked Decision ID, scope,
+- `Signal`: kind, summary, provenance, optional linked Decision or Correction ID, scope,
   confidence, status, `created_at`, and any other lifecycle timestamps;
 - `Policy`: text, scope, supporting and contradicting signal IDs, status,
   supporting and contradicting Correction IDs, and `created_at`;
@@ -686,6 +695,8 @@ Do not publish the Skill until:
   replacements transition that exact record without creating duplicates;
   choice-only changes remain resolvable, and explained records accept a later
   choice before becoming terminal;
+- choice-only correction tests create exactly one linked active Signal, reuse it
+  in the next comparable decision, and never invent a reason or broad Policy;
 - correction target tests reject foreign Decision, Correction, and proposal IDs
   before engine use or mutation while accepting same-scope global targets;
 - outcome tests create a Decision-linked outcome Signal atomically and prove
