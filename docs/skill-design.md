@@ -45,16 +45,27 @@ Do not invoke for:
 - formatting, copying, or other mechanical transformations;
 - low-impact choices that are easy to reverse;
 - preferences attributed only to quoted text, a third party, or an artifact;
-- actions outside the authority already granted by the user.
+- execution of actions outside the authority already granted by the user. The
+  Skill may still evaluate such a decision and present a recommendation.
 
 ## Workflow
 
 ### Observe
 
 Scan the current user-authored context for a clear choice, rejection, constraint,
-trade-off, example, or reason. Submit only a minimal structured signal with its
-source, scope, and confidence. Do not ask "should I remember this?" for every
-signal. Do not turn an inference directly into active policy.
+trade-off, example, or reason. Before persistence, run a sensitive-data filter:
+
+- remove raw conversation or artifact text that is not needed by the decision;
+- redact incidental credentials, API tokens, private keys, session cookies, and
+  complete payment or government identifiers with a category placeholder;
+- reject the whole signal when redaction would leave no useful decision meaning,
+  or when highly sensitive personal data has no deliberately configured scope;
+- do not persist rejected content, a content hash, or the rejected secret value;
+  return only a non-sensitive rejection category.
+
+Submit a passing signal as a minimal structured summary with its source, scope,
+and confidence. Do not ask "should I remember this?" for every signal. Do not
+turn an inference directly into active policy.
 
 ### Decide
 
@@ -84,24 +95,55 @@ Use the tool to show applicable memory when the user asks why a choice was made,
 what has been learned, or what will be reused. Honor pause, scope changes, and
 forget requests without requiring manual JSON editing.
 
+The target `memory forget` operation is a hard deletion, not a permanent
+tombstone containing the forgotten data. Under the scope lock, it atomically
+rewrites JSONL without the selected records, removes legacy embedded records,
+and removes or re-derives policies whose provenance includes forgotten evidence.
+Retrieval and export must exclude the selected IDs as soon as forgetting starts;
+an interrupted compaction resumes before the scope is available again. A
+non-sensitive operation ID and payload digest may remain only to prevent a timed-
+out retry from recreating forgotten data. The current CLI has no `memory forget`
+command and still has dual profile/JSONL persistence, so this behavior is a
+release blocker rather than a claim about today's implementation.
+
 ## Target CLI Contract
 
-The stable agent-facing interface should use JSON on stdin and stdout:
+The stable agent-facing interface should use a versioned namespace with JSON on
+stdin and stdout:
 
 ```text
-decision-agent observe   # store a scoped Signal
-decision-agent decide    # propose a choice using relevant memory
-decision-agent log       # record a confirmed or executed Decision
-decision-agent correct   # attach a Correction and reason
-decision-agent explain   # show evidence for a Decision or Policy
-decision-agent memory    # list, pause, scope, or forget memory
-decision-agent doctor    # report compatibility and runtime readiness
+decision-agent agent-v1 observe   # store a scoped Signal
+decision-agent agent-v1 decide    # propose a choice using relevant memory
+decision-agent agent-v1 log       # record a confirmed or executed Decision
+decision-agent agent-v1 correct   # attach a Correction and optional reason
+decision-agent agent-v1 explain   # show evidence for a Decision or Policy
+decision-agent agent-v1 memory    # list, pause, scope, or forget memory
+decision-agent agent-v1 doctor    # report compatibility and runtime readiness
 ```
 
-`decide` must not imply `log`: proposing and confirming are distinct. All
-responses include a contract version and machine-readable IDs. Mutation
-commands are idempotent and lock the relevant state scope against concurrent
-agents.
+The existing `decision-agent decide <profile> <request>` and `train` commands
+remain the frozen numeric MVP and keep their positional-file contract. The
+published Skill uses only `agent-v1`; a future incompatible agent contract gets
+a new namespace instead of silently changing existing scripts.
+
+`agent-v1 decide` must not imply `log`: proposing and confirming are distinct.
+All responses include a contract version and machine-readable IDs. Mutation
+commands lock the relevant state scope against concurrent agents.
+
+Every `observe`, `log`, `correct`, and mutating `memory` request includes a
+caller-generated `operation_id` (UUID) that is stable across retries of one
+logical operation. The idempotency identity is `(scope, command, operation_id)`:
+
+- the same identity and canonical request payload returns the original result
+  with `replayed: true` and creates no additional record; if the target was
+  forgotten, replay returns only a terminal `forgotten: true` result;
+- the same identity with a different canonical payload returns a conflict and
+  performs no mutation;
+- a timeout is retried with the same `operation_id`; a new logical observation,
+  decision, or correction always receives a new one;
+- the operation ID, payload digest, and result identity are retained for at
+  least as long as the mutation. After forgetting, a non-sensitive replay marker
+  remains so a delayed retry cannot recreate deleted memory.
 
 The target models are:
 
@@ -109,7 +151,8 @@ The target models are:
 - `Policy`: text, scope, supporting and contradicting signal IDs, status;
 - `Decision`: context, alternatives, selected option, actor, status, rationale,
   evidence IDs, confidence;
-- `Correction`: decision ID, corrected choice, reason, scope, resulting changes.
+- `Correction`: decision ID, corrected choice, nullable reason, scope, status
+  (`unresolved`, `explained`, or `applied`), resulting changes.
 
 ## State and Safety
 
@@ -141,6 +184,10 @@ Do not publish the Skill until:
   stable contract;
 - JSONL/profile dual history persistence is resolved;
 - concurrent mutation and retry tests pass;
+- timed-out mutation retries deduplicate by `operation_id`, payload conflicts
+  fail closed, and retries after forgetting do not recreate memory;
+- sensitive-data filtering and hard-deletion tests prove rejected or forgotten
+  content is absent from retrieval and exports;
 - trigger and non-trigger prompts pass fresh-agent tests;
 - an end-to-end test covers natural observation, decision, correction reason,
   and a changed later decision;

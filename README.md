@@ -11,7 +11,8 @@ from the reason when the user corrects them. Users should not need to issue a
 special "remember this" command for every useful signal.
 
 That broader loop is a target design, not current CLI behavior. Today the CLI
-implements artifact review and structured feedback learning. See
+implements artifact review and structured feedback learning, and retains the
+initial numeric `decide` and `train` prototype. See
 [Design Philosophy](docs/design-philosophy.md) and
 [Skill Design](docs/skill-design.md) for the target behavior and distribution
 boundary.
