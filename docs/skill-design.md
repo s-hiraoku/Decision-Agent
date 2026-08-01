@@ -50,22 +50,29 @@ Do not invoke for:
 
 ## Workflow
 
-### Observe
+### Filter before every persistence mutation
 
-Scan the current user-authored context for a clear choice, rejection, constraint,
-trade-off, example, or reason. Before persistence, run a sensitive-data filter:
+Before `observe`, `log`, `correct`, or a mutating `memory` operation persists
+anything, run the same sensitive-data filter over every stored field, including
+decision context, alternatives, rationale, corrections, and user-provided
+reasons:
 
 - remove raw conversation or artifact text that is not needed by the decision;
 - redact incidental credentials, API tokens, private keys, session cookies, and
   complete payment or government identifiers with a category placeholder;
-- reject the whole signal when redaction would leave no useful decision meaning,
-  or when highly sensitive personal data has no deliberately configured scope;
+- reject the whole mutation when redaction would leave no useful decision
+  meaning, or when highly sensitive personal data has no deliberately
+  configured scope;
 - do not persist rejected content, a content hash, or the rejected secret value;
   return only a non-sensitive rejection category.
 
-Submit a passing signal as a minimal structured summary with its source, scope,
-and confidence. Do not ask "should I remember this?" for every signal. Do not
-turn an inference directly into active policy.
+### Observe
+
+Scan the current user-authored context for a clear choice, rejection, constraint,
+trade-off, example, or reason. After the shared persistence filter passes,
+submit a minimal structured summary with its source, scope, and confidence. Do
+not ask "should I remember this?" for every signal. Do not turn an inference
+directly into active policy.
 
 ### Decide
 
@@ -98,11 +105,15 @@ forget requests without requiring manual JSON editing.
 The target `memory forget` operation is a hard deletion, not a permanent
 tombstone containing the forgotten data. Under the scope lock, it atomically
 rewrites JSONL without the selected records, removes legacy embedded records,
-and removes or re-derives policies whose provenance includes forgotten evidence.
-Retrieval and export must exclude the selected IDs as soon as forgetting starts;
-an interrupted compaction resumes before the scope is available again. A
-non-sensitive operation ID and payload digest may remain only to prevent a timed-
-out retry from recreating forgotten data. The current CLI has no `memory forget`
+and follows provenance and record links through all dependent memory. Policies,
+Decisions, and Corrections that contain or derive from forgotten evidence are
+re-derived or redacted; if they cannot remain meaningful without that evidence,
+they are deleted. Forgetting a Decision also removes its linked Corrections.
+Retrieval and export must exclude the selected IDs, dependent records, and
+derived content as soon as forgetting starts, with no dangling references. An
+interrupted compaction resumes before the scope is available again. A non-
+sensitive operation ID and payload digest may remain only to prevent a timed-out
+retry from recreating forgotten data. The current CLI has no `memory forget`
 command and still has dual profile/JSONL persistence, so this behavior is a
 release blocker rather than a claim about today's implementation.
 
@@ -187,7 +198,8 @@ Do not publish the Skill until:
 - timed-out mutation retries deduplicate by `operation_id`, payload conflicts
   fail closed, and retries after forgetting do not recreate memory;
 - sensitive-data filtering and hard-deletion tests prove rejected or forgotten
-  content is absent from retrieval and exports;
+  content and all dependent or derived content are absent from retrieval and
+  exports;
 - trigger and non-trigger prompts pass fresh-agent tests;
 - an end-to-end test covers natural observation, decision, correction reason,
   and a changed later decision;
