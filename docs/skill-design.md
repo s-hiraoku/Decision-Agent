@@ -50,13 +50,15 @@ Do not invoke for:
 
 ## Workflow
 
-### Filter before persistence or engine use
+### Filter before persistence, engine use, or return
 
 Before `observe`, `log`, `correct`, or a mutating `memory` operation persists
 anything, and before `decide` sends any input to a local or remote decision
 engine, run the same sensitive-data filter over every stored or transmitted
-field, including decision context, alternatives, rationale, corrections, and
-user-provided reasons:
+field. Before `decide`, `explain`, `memory list`, or export returns stored
+content, validate that each record belongs to the requested scope and run the
+filter again over every response field. Covered fields include decision context,
+alternatives, rationale, corrections, and user-provided reasons:
 
 - remove raw conversation or artifact text that is not needed by the decision;
 - redact incidental credentials, API tokens, private keys, session cookies, and
@@ -65,8 +67,8 @@ user-provided reasons:
   decision meaning, or when highly sensitive personal data has no deliberately
   configured scope;
 - do not persist rejected content, a content hash, or the rejected secret value;
-  do not send it to the decision engine; return only a non-sensitive rejection
-  category.
+  do not send it to the decision engine or return it from a read or export;
+  return only a non-sensitive rejection category.
 
 ### Observe
 
@@ -105,7 +107,10 @@ linked `Correction`, plus a unique proposal-consumption mapping. Concurrent
 identical filtered correction returns the existing pair, while a different
 payload conflicts and must target the resulting Decision ID as a later,
 separate correction. A retry replays both records under the same `operation_id`
-or creates neither.
+or creates neither. If that Decision is forgotten, replace the consumption
+mapping with a non-sensitive terminal marker keyed by proposal ID. Every later
+`correct` for that proposal returns only `forgotten: true`, regardless of
+operation ID or supplied proposal fields, and cannot recreate the pair.
 
 ### Inspect and forget
 
@@ -126,21 +131,34 @@ it never returns Signals, Policies, Decisions, Corrections, summaries, counts
 that reveal their content, or other personal memory while paused. Resume uses
 the same barrier and affects only later operations, so no personal memory is
 stored, returned, or applied between the pause and resume acknowledgements.
+Pause state takes precedence over ordinary mutation replay: while paused, a
+retry of `observe`, `log`, or `correct` returns only a non-sensitive `paused`
+error and never a cached result. The operation remains replayable after resume.
 
 The target `memory forget` operation is a hard deletion, not a permanent
-tombstone containing the forgotten data. Under the scope lock, it atomically
-rewrites JSONL without the selected records, removes legacy embedded records,
-and follows provenance and record links through all dependent memory. Policies,
-Decisions, and Corrections that contain or derive from forgotten evidence are
-re-derived or redacted; if they cannot remain meaningful without that evidence,
-they are deleted. Forgetting a Decision also removes its linked Corrections.
+tombstone containing the forgotten data. Forget and scope-changing operations
+compute the provenance closure of affected scopes, acquire every scope's write
+barrier in canonical scope-key order, then revalidate the closure and retry if
+it expanded. This prevents deadlocks and covers dependencies such as a project
+Signal supporting a global Policy.
+
+Deletion linearizes only after every required write barrier is acquired. Readers
+that already hold a shared lease may finish before that point; afterward no
+reader can return or apply the pre-forget state. Under those barriers, forget
+atomically rewrites JSONL without the selected records, removes legacy embedded
+records, and follows provenance and record links through all dependent memory.
+Policies, Decisions, and Corrections that contain or derive from forgotten
+evidence are re-derived or redacted; if they cannot remain meaningful without
+that evidence, they are deleted. Forgetting a Decision also removes its linked
+Corrections.
 For every deleted, redacted, or re-derived record, forget also replaces each
 affected operation entry with the terminal `forgotten` marker and removes its
 original payload, digest, result identity, and cached result; replay can never
 return a pre-forget representation even when a sanitized record survives.
 Retrieval and export must exclude the selected IDs, dependent records, and
-derived content as soon as forgetting starts, with no dangling references. An
-interrupted compaction resumes before the scope is available again. Only a non-
+derived content from the deletion linearization point onward, with no dangling
+references. An interrupted compaction resumes before any affected scope is
+available again. Only a non-
 sensitive operation ID and terminal `forgotten` replay marker may remain to
 prevent a timed-out retry from recreating forgotten data; remove the canonical
 payload and its digest so retained state cannot test guesses about forgotten
@@ -159,9 +177,85 @@ decision-agent agent-v1 decide    # propose a choice using relevant memory
 decision-agent agent-v1 log       # record a confirmed or executed Decision
 decision-agent agent-v1 correct   # attach a Correction and optional reason
 decision-agent agent-v1 explain   # show evidence for a Decision or Policy
-decision-agent agent-v1 memory    # list, pause, scope, or forget memory
+decision-agent agent-v1 memory    # list, pause, resume, scope, or forget memory
 decision-agent agent-v1 doctor    # report compatibility and runtime readiness
 ```
+
+Each invocation reads exactly one UTF-8 JSON object from stdin and writes
+exactly one JSON object to stdout. The common request envelope is:
+
+```json
+{
+  "contract": "agent-v1",
+  "request_id": "caller UUID",
+  "scope": {"kind": "project", "id": "stable opaque ID"},
+  "operation_id": "caller UUID for mutations only",
+  "expected_generation": 4,
+  "input": {}
+}
+```
+
+`contract`, `request_id`, and `input` are always required. `scope` is required
+except for `doctor`; global scope is `{"kind":"global","id":"user"}`.
+`operation_id` is required only for `observe`, `log`, `correct`, and memory
+`pause`, `resume`, `scope`, or `forget`. `expected_generation` is required for
+those memory controls and omitted elsewhere. Unknown fields or enum values fail
+validation. UUIDs use canonical RFC 4122 text, generations are unsigned 64-bit
+integers, opaque IDs are 1–256 UTF-8 bytes, each free-text field is at most 16
+KiB, arrays contain at most 100 items, and the complete request is at most 256
+KiB. Confidence is a JSON number from 0 through 1. Except where marked optional
+or nullable below, every listed field is required and additional input fields
+are rejected.
+
+Command-specific `input` fields are:
+
+- `observe`: `kind` (`choice`, `rejection`, `constraint`, `tradeoff`, `example`,
+  or `reason`), `summary`, `provenance` (`source: "user"` plus opaque
+  `reference`), and `confidence`;
+- `decide`: `context`, two or more `alternatives` (`id`, `label`, optional
+  `details`), and optional `constraints` string array;
+- `log`: `selected_option`, `actor` (`user` or `agent`), `status` (`confirmed`,
+  `executed`, or `rejected`), `rationale`, and `evidence_ids` string array;
+- `correct`: nullable `decision_id`, nullable `proposal` (`proposal_id`,
+  `context`, `alternatives`, `recommended_option`, `rationale`, `evidence_ids`),
+  `corrected_choice`, and nullable `reason`; exactly one of `decision_id` or
+  `proposal` is required;
+- `explain`: `target_type` (`decision` or `policy`) and `target_id`;
+- `memory`: `action` (`list`, `pause`, `resume`, `scope`, or `forget`); `forget`
+  also requires a non-empty `record_ids` string array, while `scope` requires
+  `target_scope`; list, pause, and resume take no other fields;
+- `doctor`: no fields.
+
+Successful responses use this envelope:
+
+```json
+{
+  "contract": "agent-v1",
+  "ok": true,
+  "request_id": "echoed caller UUID",
+  "scope": {"kind": "project", "id": "stable opaque ID"},
+  "generation": 5,
+  "result": {},
+  "replayed": false
+}
+```
+
+`scope` and `generation` are omitted only by `doctor`. Mutation results include
+created record IDs; `decide` returns `proposal_id`, filtered proposal fields,
+recommendation, and evidence IDs; `explain` and list return filtered records;
+memory controls return current state and generation. Replays set `replayed` and
+obey the pause, forget, and generation rules below.
+
+Errors use the same `contract`, `request_id`, and applicable scope metadata with
+`ok: false` and `error: {"code", "message", "retryable"}`. Stable codes are
+`invalid_request`, `unsupported_contract`, `sensitive_rejected`, `paused`,
+`not_found`, `forgotten`, `operation_conflict`, `generation_conflict`,
+`stale_control`, and `runtime_unavailable`. Validation and contract errors exit
+2; state, idempotency, pause, and generation conflicts exit 3; privacy rejection
+exits 4; missing or forgotten targets exit 5; runtime failure exits 6. Success,
+including safe replay, exits 0. Diagnostics go to stderr; failures never emit a
+partial success or mutation. A conflict response returns only non-sensitive
+identity and current control metadata, never either payload.
 
 The existing `decision-agent decide <profile> <request>` and `train` commands
 remain the frozen numeric MVP and keep their positional-file contract. The
@@ -239,6 +333,9 @@ Do not publish the Skill until:
 
 - `observe`, `decide`, `log`, `correct`, `explain`, and memory controls have a
   stable contract;
+- schema conformance tests cover every request, success, error, exit code,
+  unknown field, required field, and command-specific result in the JSON
+  contract;
 - JSONL/profile dual history persistence is resolved;
 - concurrent mutation and retry tests pass;
 - timed-out mutation retries deduplicate by `operation_id`, payload conflicts
@@ -246,17 +343,21 @@ Do not publish the Skill until:
   returns only the terminal marker without recreating memory;
 - immediate proposal rejection atomically creates one rejected Decision and one
   linked Correction, and concurrent same-proposal tests prove it creates no
-  duplicates across different operation IDs;
+  duplicates across different operation IDs or after its terminal proposal
+  marker is forgotten;
 - scoped pause concurrency tests prove no memory is stored, retrieved, or
   applied after pause succeeds and before resume succeeds, including reads that
   began before pause;
 - pause and resume replay tests prove stale operations report the current scope
-  generation, and paused list tests expose only non-sensitive control metadata;
+  generation, ordinary cached mutation results stay hidden while paused, and
+  paused list tests expose only non-sensitive control metadata;
 - sensitive-data filtering and hard-deletion tests prove rejected or forgotten
   content and all dependent or derived content are absent from retrieval and
-  exports, rejected decision inputs never reach an engine, and forgotten
-  payload digests, cached results, and replay metadata for every affected record
-  are removed or terminalized;
+  exports, every returned field is scope-checked and filtered, rejected decision
+  inputs never reach an engine, and forgotten payload digests, cached results,
+  and replay metadata for every affected record are removed or terminalized;
+- forget race tests cover readers that precede the deletion linearization point
+  and deterministic barrier acquisition for cross-scope dependencies;
 - trigger and non-trigger prompts pass fresh-agent tests;
 - an end-to-end test covers natural observation, decision, correction reason,
   and a changed later decision;
