@@ -337,9 +337,12 @@ Command-specific `input` fields are:
   guide future decisions but leaves the Correction `unresolved` so the reason
   can be attached later. It never rewrites the linked Decision's historical
   selection, actor, status, rationale, or evidence. The first non-null corrected choice also atomically creates
-  one linked, active, narrowly scoped choice Signal whose provenance is the
-  Correction ID; it records the explicit choice without inventing a reason, and
-  idempotent resolution never duplicates it. When both correction fields are
+  one linked, active, exact-context choice Signal whose provenance is the
+  Correction ID; it records the explicit choice without inventing a reason. Its
+  match key is the Correction's scope, Decision context, corrected choice,
+  ordered Decision alternatives with any supplied `new_alternative` appended,
+  and constraints. It may influence a later decision only when that complete
+  key matches, and idempotent resolution never duplicates it. When both correction fields are
   null on a newly created Decision- or proposal-based Correction, the same
   mutation instead creates one linked, active, exact-context rejection Signal.
   Its match key is the Correction's scope, Decision context, rejected selected
@@ -352,7 +355,11 @@ Command-specific `input` fields are:
   and cannot be resolved again. Once a Correction has a non-null corrected
   choice, later resolution may omit it or repeat the same ID but cannot replace
   it; a different choice returns `invalid_request` before changing the
-  Correction, Decision, or linked Signal.
+  Correction, Decision, or linked Signal. The same immutability rule applies to
+  a non-null reason: later resolution may omit it or repeat the same filtered
+  reason but cannot replace it. A different reason returns `invalid_request`
+  before changing the Correction or any linked Signal or Policy, so existing
+  Policy provenance never changes meaning in place.
   Proposal-based `correct` applies the same full canonical proposal-digest check
   as proposal-backed `log` before validating or storing the correction. The
   digest covers context, ordered alternatives and their complete fields,
@@ -722,9 +729,15 @@ Do not publish the Skill until:
   choice-only changes remain resolvable, and explained records accept a later
   choice before becoming terminal;
 - choice-only correction tests create exactly one linked active Signal, reuse it
-  in the next comparable decision, never invent a reason or broad Policy,
-  reject later choice replacement, retain a supplied new alternative on the
-  Correction, and never rewrite the original Decision;
+  only when scope, context, corrected choice, ordered alternatives including any
+  appended new alternative, and constraints all match; they do not affect
+  near-miss contexts, never invent a reason or broad Policy, reject later choice
+  replacement, retain a supplied new alternative on the Correction, and never
+  rewrite the original Decision;
+- correction reason tests allow an existing reason to be omitted or repeated
+  while completing the same Correction, reject replacement before mutating the
+  Correction or linked Signals or Policies, and preserve the meaning of every
+  existing Policy provenance link;
 - pure-rejection tests for Decision- and proposal-based corrections create one
   linked active rejection Signal, match scope, context, rejected option,
   ordered alternatives, and constraints exactly, avoid the rejected option on
