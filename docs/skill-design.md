@@ -219,14 +219,15 @@ Command-specific `input` fields are:
 - `decide`: `context`, two or more `alternatives` (`id`, `label`, optional
   `details`), and optional `constraints` string array;
 - `log`: `selected_option`, `actor` (`user` or `agent`), `status` (`confirmed`,
-  `executed`, or `rejected`), `rationale`, `evidence_ids` string array, and
-  either a complete `proposal` object or both `context` and `alternatives`; a
-  proposal has the same fields defined for `correct`, and the two forms are
-  mutually exclusive;
+  `executed`, or `rejected`), `rationale`, `evidence_ids` string array,
+  `confidence`, and either a complete `proposal` object or both `context` and
+  `alternatives`; a proposal has the same fields defined for `correct`, and its
+  confidence must match the top-level value; the two forms are mutually
+  exclusive;
 - `correct`: nullable `decision_id`, nullable `proposal` (`proposal_id`,
-  `context`, `alternatives`, `recommended_option`, `rationale`, `evidence_ids`),
-  `corrected_choice`, and nullable `reason`; exactly one of `decision_id` or
-  `proposal` is required;
+  `context`, `alternatives`, `recommended_option`, `rationale`, `evidence_ids`,
+  `confidence`), `corrected_choice`, and nullable `reason`; exactly one of
+  `decision_id` or `proposal` is required;
 - `explain`: `target_type` (`decision` or `policy`) and `target_id`;
 - `memory`: `action` (`list`, `pause`, `resume`, `scope`, or `forget`); `forget`
   requires a non-empty `record_ids` string array; `scope` requires `record_ids`,
@@ -250,9 +251,9 @@ Successful responses use this envelope:
 
 `scope` and `generation` are omitted only by `doctor`. Mutation results include
 created record IDs; `decide` returns `proposal_id`, filtered proposal fields,
-recommendation, and evidence IDs; `explain` and list return filtered records;
-memory controls return current state and generation. Replays set `replayed` and
-obey the pause, forget, and generation rules below.
+recommendation, evidence IDs, and confidence; `explain` and list return filtered
+records; memory controls return current state and generation. Replays set
+`replayed` and obey the pause, forget, and generation rules below.
 
 Errors after envelope validation use the same `contract`, `request_id`, and
 applicable scope metadata with `ok: false` and
@@ -314,9 +315,13 @@ or infer a selection. Every `record_id` must belong to the envelope scope, the
 target must differ, and the supplied set must be closed over links required for
 referential integrity. Under the source and target barriers, the command
 compares both expected generations, then atomically rewrites the scope of
-exactly those records and their operation identities. A non-closed selection
-fails with `scope_dependency_conflict` and non-sensitive missing record IDs,
-without moving anything.
+exactly those records. Original operation identities are never re-keyed into the
+target scope: each becomes a non-sensitive `moved: true` terminal marker in the
+source scope, and moved records retain an internal provenance pointer to that
+marker. A delayed original retry therefore cannot recreate the record, and an
+unrelated target-scope operation with the same UUID cannot collide. A non-closed
+selection fails with `scope_dependency_conflict` and non-sensitive missing
+record IDs, without moving anything.
 
 The target models are:
 
@@ -381,7 +386,9 @@ Do not publish the Skill until:
 - forget race tests cover readers that precede the deletion linearization point
   and deterministic barrier acquisition for cross-scope dependencies;
 - scope tests prove only an explicitly selected, reference-closed record set
-  moves atomically and incomplete selections fail without mutation;
+  moves atomically, source replay markers prevent delayed recreation, target
+  UUID collisions are impossible, and incomplete selections fail without
+  mutation;
 - trigger and non-trigger prompts pass fresh-agent tests;
 - an end-to-end test covers natural observation, decision, correction reason,
   and a changed later decision;

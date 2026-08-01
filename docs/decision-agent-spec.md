@@ -165,10 +165,15 @@ This has direct consequences for how accumulated data is treated:
   append-only at the evidence layer, and human-inspectable, so that the
   model of the user can be re-derived, audited, or rebuilt later. The
   specific format (JSONL today) is an implementation detail; the
-  requirement that history is never silently lost or rewritten is not.
+  requirement that history is never silently lost or rewritten is not. An
+  explicit user `memory forget` request is the sole exception: it must use the
+  documented locked hard-deletion protocol to remove the selected evidence and
+  every dependent representation, never a silent lifecycle cleanup.
 - **Durability of the asset is not the same claim as stability of
   retrieval over it.** The stored rules and records are durable and
-  append-only — that guarantee is real today. It is a separate, stronger
+  append-only — that guarantee is real today because the current CLI has no
+  forget operation. The target forget contract deliberately overrides it only
+  for explicit user deletion. It is a separate, stronger
   claim that *ranking or retrieval* over an ever-growing asset always
   surfaces the same result for the same input, and the MVP does not make
   that stronger claim: as more rules and records accumulate, which past
@@ -338,8 +343,11 @@ that represent important judgment patterns.
 
 ## History Persistence
 
-Decision records should be stored append-only as JSONL. The profile keeps the
-current judgment summary, while JSONL records preserve the raw evidence.
+Decision records should be stored append-only as JSONL during normal operation.
+The profile keeps the current judgment summary, while JSONL records preserve the
+raw evidence. Explicit user-requested forgetting is the only rewrite exception
+and must follow the locked deletion and dependent-data rules in the Skill
+contract.
 
 Recommended local layout:
 
