@@ -124,10 +124,12 @@ what has been learned, or what will be reused. Honor pause, scope changes, and
 forget requests without requiring manual JSON editing.
 
 Every command that stores, retrieves, or applies memory participates in a scoped
-read/write barrier. `decide`, `explain`, and other readers hold a shared lease
-through their last use and response construction; mutations hold an exclusive
-lease. `memory pause` takes the exclusive lease and drains earlier readers and
-writers before it succeeds. After the pause acknowledgement, `observe`, `log`,
+read/write barrier. `explain` and non-issuing readers hold a shared lease through
+their last use and response construction; mutations hold an exclusive lease.
+`decide` uses the read-then-issue protocol below because successful proposal
+issuance is a scoped mutation. `memory pause` takes the exclusive lease and
+drains earlier readers and writers before it succeeds. After the pause
+acknowledgement, `observe`, `log`,
 `correct`, and other non-control mutations in that scope fail closed, and
 `decide` and `explain` neither retrieve nor apply its memory. `memory list`,
 `forget`, and an explicit scoped `resume` remain available, but list returns
@@ -160,6 +162,19 @@ Responses list every scope and generation actually consulted so callers can
 explain whether global or project memory influenced the result. `memory list`
 remains limited to the single envelope scope unless the caller makes separate
 requests.
+
+`decide` first evaluates under shared leases for its effective scopes and records
+their generations, then releases those leases. To issue the proposal, it
+reacquires all scopes in canonical order with an exclusive envelope-scope lease
+and shared leases for the other consulted scopes. It revalidates pause state,
+generations, evidence, and the filtered result; if any consulted generation
+changed, it releases the leases and reevaluates instead of committing stale
+output. Otherwise it atomically persists the proposal, verifier, digest, cached
+result, idempotency metadata, and expiry, advances the envelope generation once,
+and holds the leases through response construction. Concurrent issuances
+therefore serialize without attempting an in-place shared-to-exclusive upgrade.
+The response's `consulted_scopes` reports the revalidated evaluation
+generations, while its top-level envelope generation is the post-issuance value.
 
 Before `log` or a proposal-based `correct` persists cross-scope `evidence_ids`,
 it computes every referenced scope, acquires the destination scope's exclusive
@@ -267,16 +282,15 @@ Command-specific `input` fields are:
   cannot directly activate a Policy;
 - `decide`: `context`, two or more `alternatives` (`id`, `label`, optional
   `details`) with unique IDs, and optional `constraints` string array;
-- `log`: `selected_option`, `actor` (`user` or `agent`), `status` (`confirmed`
-  or `executed`), `rationale`, `evidence_ids` string array, `confidence`,
-  optional `unresolved_uncertainties` string array, and
-  either a complete `proposal` object or both `context` and `alternatives`; a
-  proposal has the same fields defined for `correct`, and its confidence and
-  unresolved uncertainties must match the top-level values; the two forms are
-  mutually exclusive. Rejection is
+- `log`: `selected_option`, `actor` (`user` or `agent`), `status` (`confirmed` or
+  `executed`), and either a complete `proposal` object or the explicit fields
+  `context`, `alternatives`, `rationale`, `evidence_ids`, `confidence`, optional
+  `constraints`, and optional `unresolved_uncertainties`. A proposal has the
+  same fields defined for `correct`; proposal-backed requests reject the
+  explicit-only fields as additional input, and the two forms are mutually
+  exclusive. Rejection is
   accepted only by `correct`, which atomically creates the linked Correction.
-  The explicit non-proposal form also accepts optional `constraints`. For a
-  proposal-backed log, `selected_option` must equal `recommended_option`; a
+  For a proposal-backed log, `selected_option` must equal `recommended_option`; a
   mismatch fails with `invalid_request` without consuming the proposal and must
   be submitted through proposal-based `correct` as an override. After the
   shared filter, every carried proposal field must match the complete canonical
@@ -632,6 +646,8 @@ Do not publish the Skill until:
 - timed-out `decide` retries return exactly one proposal ID per operation and
   cannot be consumed into duplicate Decisions; replay also suppresses the
   cached proposal when any consulted scope is paused;
+- concurrent decide tests prove evaluation snapshots are revalidated before an
+  exclusive, single-generation issuance commit with no lease upgrade deadlock;
 - idempotency canonicalization tests vary request IDs, member order, whitespace,
   record-ID permutations, duplicates, and semantic arrays or fields to
   distinguish replay, validation failure, and conflict;
@@ -644,6 +660,7 @@ Do not publish the Skill until:
   with a fixed agent actor and never attributes its rationale to the user;
 - proposal consumption tests alter each carried proposal field and require a
   pre-mutation `proposal_conflict` unless the complete canonical digest matches;
+  schema tests also reject duplicated explicit log fields in proposal mode;
 - unresolved-correction tests target `correction_id` and prove later reasons or
   replacements transition that exact record without creating duplicates;
 - correction target tests reject foreign Decision, Correction, and proposal IDs
