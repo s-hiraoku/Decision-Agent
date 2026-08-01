@@ -340,9 +340,14 @@ A stale control replay is exactly `ok: false`, top-level `replayed: true`, no
 "message":"stale control operation","retryable":false}`; it exits 3. For a
 stale `pause` or `resume`, it includes the envelope `scope`, its current
 `generation`, and `control: {"paused": true-or-false}`. For a replayed scope
-move whose records have since moved again, `control` instead contains only their
-non-sensitive `current_scope` and current `generation`. A caller must issue a
-new control operation with a new operation ID and freshly read generations.
+move whose records have since split or moved again, `control` instead contains
+`locations`: a canonical scope-key-ordered array covering every current
+destination of the original moved closure. Each entry contains that `scope`,
+its current `generation`, and the closure's live opaque `record_ids` in sorted
+order; every live record appears exactly once. A forgotten record invokes the
+terminal forgotten rule instead of returning a partial location map. A caller
+must issue a new control operation with a new operation ID and freshly read
+generations.
 
 The existing `decision-agent decide <profile> <request>` and `train` commands
 remain the frozen numeric MVP and keep their positional-file contract. The
@@ -429,8 +434,8 @@ source markers in the selected records' history. Replaying a scope move follows
 that lineage under the applicable barriers and never returns cached generations.
 If the records still reside in the requested target, it returns `replayed: true`
 with freshly read `affected_scopes`; if they moved again, it returns
-`stale_control` with only non-sensitive current scope and generation metadata;
-if forgotten, the terminal forgotten rule takes precedence.
+the exact `stale_control` envelope with the complete canonical `locations` map
+defined above; if forgotten, the terminal forgotten rule takes precedence.
 
 An active list cursor is an opaque, integrity-protected token bound to contract,
 scope, generation, type filter, and the last `(created_at, id)` key; it contains
@@ -535,7 +540,9 @@ Do not publish the Skill until:
 - scope closure tests prove global evidence is locked and revalidated but never
   moved or traversed, and foreign-project evidence fails before mutation;
 - multi-scope response tests require complete, canonical `affected_scopes`, and
-  scope replay tests cover unchanged targets, later moves, and forgetting;
+  scope replay tests cover unchanged targets, later moves, split destinations,
+  and forgetting; split-destination tests require every live record from the
+  original closure exactly once in the canonical `locations` map;
 - moved operation and proposal retry tests require the exact terminal `moved`
   envelope and prove that it reveals no target scope or record content;
 - proposal/log/model conformance tests preserve unresolved uncertainties, and
