@@ -4,6 +4,19 @@ Decision Agent is a small Python prototype for imitating a user's decision patte
 It learns from past decision examples and reviews subjective artifacts with an
 explainable judgment.
 
+The broader product direction is a continuous decision loop: integrating agents
+notice useful choices and constraints during ordinary work, consult Decision
+Agent at material decision points, log the decision and rationale, and learn
+from the reason when the user corrects them. Users should not need to issue a
+special "remember this" command for every useful signal.
+
+That broader loop is a target design, not current CLI behavior. Today the CLI
+implements artifact review and structured feedback learning, and retains the
+initial numeric `decide` and `train` prototype. See
+[Design Philosophy](docs/design-philosophy.md) and
+[Skill Design](docs/skill-design.md) for the target behavior and distribution
+boundary.
+
 The current implementation is deterministic and does not require an LLM or an API key.
 It is designed as a base that can later be connected to chat, forms, or an LLM-based
 interviewer.

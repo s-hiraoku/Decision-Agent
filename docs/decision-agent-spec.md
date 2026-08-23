@@ -21,7 +21,8 @@ In these cases, an agent can produce something plausible but still different fro
 what the user imagined. Decision Agent is intended to close that gap by learning
 how the user judges outputs over repeated iterations.
 
-The central responsibility is judgment, not generation.
+The central responsibility is judgment and decision support, not generation.
+Artifact review is the current implemented slice of a broader decision loop.
 
 ## Philosophy
 
@@ -34,12 +35,39 @@ fidelity: Decision Agent is a model of one person's judgment criteria, built
 and refined from that person's own decisions.
 
 This is a fidelity target, not an identity claim. Decision Agent does not
-become the user or decide on the user's behalf; it predicts what the user
-would decide, stays inspectable about why, and is explicitly allowed to be
-wrong. "Predicts how the user would respond" (see Core Concept) is the
-honest framing this philosophy commits to — "acts as the user" is not.
-Verdicts, issues, and revision instructions are always framed as a
-prediction of the user's judgment, never as the user's actual decision.
+become the user. It may make a decision when an integrating agent already has
+delegated authority for that decision; otherwise it predicts or recommends
+what the user would decide. In both cases it stays inspectable about why and is
+explicitly allowed to be wrong. "Uses a model of the user's judgment" is the
+honest framing this philosophy commits to — "acts as the user" is not. Every
+record distinguishes an agent proposal or delegated decision from a decision
+the user personally confirmed.
+
+### Observe naturally, decide deliberately, learn from correction
+
+Decision Agent should not depend on the user issuing an explicit "remember
+this" command. Integrating agents should notice naturally occurring choices,
+rejections, constraints, trade-offs, examples, and corrections that may improve
+future decisions, and preserve them as scoped evidence.
+
+Proactive observation does not mean that every utterance becomes policy. The
+system separates observations (`Signal`) from reusable rules (`Policy`), actual
+choices (`Decision`), and later user overrides (`Correction`). Signals retain
+provenance, scope, confidence, and lifecycle state. Weak inference stays weak;
+clear user corrections carry more weight.
+
+At a material decision boundary, an integrating agent should invoke Decision
+Agent automatically when multiple reasonable alternatives exist and the user's
+past judgment is relevant. The result is an explainable decision or proposal,
+depending on authority already delegated for that task; invoking Decision Agent
+does not grant new authority. Once confirmed or executed, the choice and its
+rationale are logged. If the user says they would not decide that way, use a
+reason already given or ask for the missing reason naturally, then apply the
+correction to the next comparable decision. Never invent a reason when the user
+does not provide one.
+
+The complete target philosophy, including evidence priority, privacy, scope,
+and user control, is defined in [Design Philosophy](design-philosophy.md).
 
 ### An opinion, not an echo
 
@@ -137,10 +165,15 @@ This has direct consequences for how accumulated data is treated:
   append-only at the evidence layer, and human-inspectable, so that the
   model of the user can be re-derived, audited, or rebuilt later. The
   specific format (JSONL today) is an implementation detail; the
-  requirement that history is never silently lost or rewritten is not.
+  requirement that history is never silently lost or rewritten is not. An
+  explicit user `memory forget` request is the sole exception: it must use the
+  documented locked hard-deletion protocol to remove the selected evidence and
+  every dependent representation, never a silent lifecycle cleanup.
 - **Durability of the asset is not the same claim as stability of
   retrieval over it.** The stored rules and records are durable and
-  append-only — that guarantee is real today. It is a separate, stronger
+  append-only — that guarantee is real today because the current CLI has no
+  forget operation. The target forget contract deliberately overrides it only
+  for explicit user deletion. It is a separate, stronger
   claim that *ranking or retrieval* over an ever-growing asset always
   surfaces the same result for the same input, and the MVP does not make
   that stronger claim: as more rules and records accumulate, which past
@@ -167,7 +200,9 @@ extraction, semantic evaluation), see [Detailed Design](detailed-design.md).
 
 ## Core Concept
 
-Decision Agent reviews an artifact and predicts how the user would respond.
+Decision Agent models how the user makes choices, applies that model at material
+decision boundaries, and improves when the user corrects it. Artifact review is
+the current specialization of this concept.
 
 It should answer:
 
@@ -181,7 +216,26 @@ The agent is expected to improve through repeated iteration. Early accuracy may 
 low, so the system must preserve judgment differences and feedback rather than
 pretending to be correct immediately.
 
-## Target Workflow
+## Target Decision Workflow
+
+1. An integrating agent notices a user choice, rejection, constraint,
+   trade-off, example, or correction during ordinary work.
+2. It records a minimal, scoped signal without requiring a special memory command.
+3. When a material decision arises, it asks Decision Agent to evaluate the
+   alternatives using relevant signals, policies, and prior decisions.
+4. Decision Agent returns an explainable decision or proposal and confidence,
+   according to the integrating agent's existing authority.
+5. After the choice is confirmed or executed, the system logs the decision,
+   rationale, and evidence used.
+6. If the user corrects the decision, the system uses an existing explanation
+   or asks for the missing reason, links the correction to the decision, and
+   updates future behavior.
+7. The loop repeats: `observe -> decide -> log -> correct -> learn -> reuse`.
+
+Decision Agent recommendations do not grant permission to perform an external,
+destructive, financial, publishing, or communication action.
+
+## Current Artifact Review Workflow
 
 1. A human or another agent creates an artifact.
 2. Decision Agent reviews the artifact.
@@ -289,8 +343,11 @@ that represent important judgment patterns.
 
 ## History Persistence
 
-Decision records should be stored append-only as JSONL. The profile keeps the
-current judgment summary, while JSONL records preserve the raw evidence.
+Decision records should be stored append-only as JSONL during normal operation.
+The profile keeps the current judgment summary, while JSONL records preserve the
+raw evidence. Explicit user-requested forgetting is the only rewrite exception
+and must follow the locked deletion and dependent-data rules in the Skill
+contract.
 
 Recommended local layout:
 
@@ -419,7 +476,11 @@ Supported verdicts:
 
 ## Learning Behavior
 
-The first implementation should learn from explicit feedback.
+The target system learns from naturally observed decision evidence and from user
+corrections; an explicit "remember this" command is not a prerequisite. The
+current artifact-review implementation still accepts structured, explicit
+feedback through `learn` and `iterate`. General signal observation and decision
+correction are target behavior, not implemented CLI behavior yet.
 
 Feedback loop (target behavior; see "Still incomplete" for what today's
 implementation actually enforces versus what is stated here as intent):
@@ -518,6 +579,11 @@ Implemented first steps:
 
 Still incomplete:
 
+- proactive extraction of scoped decision signals from ordinary agent work
+- transient proposals separated from confirmed, executed, or rejected durable decisions
+- correction dialogue that asks for a missing reason and reuses it later
+- inspect, pause, scope, and forget controls for personal judgment memory
+- the distributable Skill defined in [Skill Design](skill-design.md)
 - orchestration around generator agents before the review step
 - stronger extraction of durable preference rules from free-form feedback
 - stronger semantic matching for evaluation beyond heuristic text similarity

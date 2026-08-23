@@ -1,0 +1,876 @@
+# Decision Agent Skill Design
+
+> **Target design, not an installed Skill:** publish the Skill only after the
+> stable CLI contracts in this document exist. Today's CLI cannot observe
+> general conversation, log arbitrary decisions, or attach corrections to those
+> decisions. See [Design Philosophy](design-philosophy.md).
+
+## Purpose
+
+The Skill connects an integrating agent to Decision Agent's continuous decision
+loop. It should notice useful decision signals during ordinary work, invoke
+Decision Agent at material decision boundaries, log confirmed decisions, and
+turn user corrections into future decision behavior.
+
+The Skill is an orchestrator. Decision extraction, persistence, retrieval, and
+policy updates belong in the Decision Agent CLI or a future stable tool API, not
+in prose duplicated inside `SKILL.md`.
+
+## Draft Trigger Metadata
+
+```yaml
+---
+name: decision-agent
+description: Use Decision Agent during work that reveals user-specific choices, constraints, rejections, trade-offs, or corrections, and when an agent must make a material decision affected by the user's prior judgment. Proactively capture scoped decision signals, consult relevant history before consequential or precedent-setting choices, log confirmed decisions and rationale, and learn why the user would decide differently. Do not use for factual lookup, mechanical processing, generic code review, or trivial reversible choices with no relevant preference.
+---
+```
+
+Implicit invocation is best-effort. A Skill is not a continuously running
+observer. Environments that require the loop on every task should also add an
+`AGENTS.md` policy, hook, or future Plugin/MCP integration.
+
+## Trigger Boundary
+
+Invoke implicitly when:
+
+- the user makes or rejects a choice and the reason may matter later;
+- the user states a constraint or trade-off that changes what "best" means;
+- the agent faces several valid alternatives with user-specific consequences;
+- the decision is hard to reverse, will recur, or establishes precedent;
+- the user corrects a recommendation or says they would not decide that way.
+
+Do not invoke for:
+
+- factual questions with an externally verifiable answer;
+- formatting, copying, or other mechanical transformations;
+- low-impact choices that are easy to reverse;
+- preferences attributed only to quoted text, a third party, or an artifact;
+- execution of actions outside the authority already granted by the user. The
+  Skill may still evaluate such a decision and present a recommendation.
+
+## Workflow
+
+### Filter before persistence, engine use, or return
+
+Before `observe`, `log`, `correct`, or a mutating `memory` operation persists
+anything, and before `decide` sends any input to a local or remote decision
+engine, run the same sensitive-data filter over every stored or transmitted
+field. Before `decide`, `explain`, or `memory list` returns stored content,
+validate that each record belongs to the command's effective scope set and run
+the filter again over every response field. Covered fields include decision
+context, alternatives, rationale, corrections, and user-provided reasons:
+
+- remove raw conversation or artifact text that is not needed by the decision;
+- redact incidental credentials, API tokens, private keys, session cookies, and
+  complete payment or government identifiers with a category placeholder;
+- reject the mutation or decision request when redaction would leave no useful
+  decision meaning, or when highly sensitive personal data has no deliberately
+  configured scope;
+- do not persist rejected content, a content hash, or the rejected secret value;
+  do not send it to the decision engine or return it from a read; return only a
+  non-sensitive rejection category.
+
+### Observe
+
+Scan the current user-authored context for a clear choice, rejection, constraint,
+trade-off, example, or reason. After the shared persistence filter passes,
+submit a minimal structured summary with its source, scope, and confidence. Do
+not ask "should I remember this?" for every signal. Do not turn an inference
+directly into active policy.
+
+### Decide
+
+Before a material choice, apply the shared filter and send only the passing,
+minimized context and alternatives to Decision Agent. Use the returned
+recommendation and evidence to decide when the task is already delegated;
+otherwise present it as a proposal. Explain the result concisely and distinguish
+an agent decision from a user-confirmed decision.
+
+### Log
+
+After confirmation or execution, record the selected alternative, status,
+explainable rationale, and the signal or policy IDs used. When logging a
+`decide` result, submit its proposal ID and complete filtered proposal fields so
+the mutation can validate the selected option and persist context and
+alternatives without reconstructing conversation. Never persist hidden chain-of-
+thought.
+
+### Correct and learn
+
+Treat statements such as "I would not choose that," overrides, and changed
+decisions as corrections. If the user already gave a reason, do not ask again.
+If the reason is missing and material to reuse, ask one natural follow-up. Link
+the correction to the original decision and report the narrow future behavior
+that changed. Keep unexplained corrections unresolved rather than inventing a
+reason. A pure rejection may leave both the replacement choice and reason
+unknown; store it as unresolved rather than requiring either value. It also
+creates one active rejection Signal limited to the exact recorded decision
+context and rejected option, so the next comparable decision can avoid simply
+repeating that option without inventing a reason or a reusable Policy. When the
+user rejects an unlogged `decide` proposal, submit the returned
+proposal ID and proposal fields with `correct`; after the shared filter passes,
+that one mutation atomically creates a `Decision` with `rejected` status and its
+linked `Correction`, plus a unique proposal-consumption mapping shared with
+`log`. Concurrent `log` or `correct` calls for the same proposal serialize on
+that proposal ID: an identical filtered mutation returns the existing result,
+while a different payload conflicts and must target the resulting Decision ID
+as a later, separate correction. A retry replays all created records under the
+same `operation_id` or creates none. If that Decision is forgotten, replace the
+consumption mapping with a non-sensitive terminal marker keyed by proposal ID.
+Every later `log` or `correct` for that proposal returns only `forgotten: true`,
+regardless of operation ID or supplied proposal fields, and cannot recreate it.
+
+### Inspect and forget
+
+Use the tool to show applicable memory when the user asks why a choice was made,
+what has been learned, or what will be reused. Honor pause, scope changes, and
+forget requests without requiring manual JSON editing.
+
+Every command that stores, retrieves, or applies memory participates in a scoped
+read/write barrier. `explain` and non-issuing readers hold a shared lease through
+their last use and response construction; mutations hold an exclusive lease.
+`decide` uses the read-then-issue protocol below because successful proposal
+issuance is a scoped mutation. `memory pause` takes the exclusive lease and
+drains earlier readers and writers before it succeeds. After the pause
+acknowledgement, `observe`, `log`,
+`correct`, and other non-control mutations in that scope fail closed, and
+`decide` and `explain` neither retrieve nor apply its memory. `memory list`,
+`forget`, and an explicit scoped `resume` remain available, but list returns
+only non-sensitive control metadata such as scope, paused state, and generation;
+it never returns Signals, Policies, Decisions, Corrections, summaries, counts
+that reveal their content, or other personal memory while paused. Resume uses
+the same barrier and affects only later operations, so no personal memory is
+stored, returned, or applied between the pause and resume acknowledgements.
+Pause state takes precedence over idempotent-operation replay: while paused, a
+retry of `decide`, `observe`, `log`, `correct`, or `memory scope` returns only a
+non-sensitive `paused` error and never a cached proposal, result, or location
+map. The operation remains replayable after resume.
+
+Operation metadata retains the canonical set of every scope whose memory
+contributed to or was changed by the original idempotent operation, including
+proposal issuance, without retaining evidence content. A scope inspected only
+to learn that it was paused and skipped is not a participant. Before replaying
+any such operation, the server acquires shared leases for that full
+participating set in canonical order,
+holds them through response construction, and revalidates pause state. If any
+participating scope is paused, the exact paused envelope takes precedence and no
+cached result, evidence, affected-scope metadata, location, record ID, or record
+count is returned. This includes project operations that read global evidence and replays
+of cross-scope forget.
+
+`pause` and `resume` replays are the exception to participating-scope pause
+precedence: they never return the generic paused envelope. They always use the
+generation-based control replay rules below, returning the original success
+while its resulting generation remains current and the exact `stale_control`
+envelope otherwise. This keeps a successful pause replayable while paused and
+lets an older resume report a later pause without exposing memory content.
+
+For a project-scoped `decide` or `explain`, the effective scope set is that
+project plus the user's global scope; a global request uses only global scope.
+Readers acquire shared leases for every effective scope in canonical scope-key
+order and validate each returned record against that set. A paused participating
+scope contributes no records, while other active scopes may still contribute.
+Responses list every scope and generation actually consulted so callers can
+explain whether global or project memory influenced the result. `memory list`
+remains limited to the single envelope scope unless the caller makes separate
+requests.
+
+For `decide`, the envelope scope is not optional evidence: if it is paused, the
+command returns the exact paused envelope before engine use or proposal
+issuance, even when another effective scope is active. Only non-envelope scopes
+may be skipped as paused evidence during the read phase.
+
+For `explain`, the envelope and target scopes are mandatory. After provenance
+discovery, every supporting scope is mandatory as well. If any of those scopes
+is paused, `explain` returns the exact paused envelope and no partial target,
+support, count, or consulted-scope metadata. A paused non-envelope scope that
+contains no target or discovered support may still be skipped.
+
+`decide` first verifies the envelope scope is active, then evaluates under
+shared leases for its effective scopes and records the active consulted set,
+its generations, and the skipped paused set, then releases those leases. To
+issue the proposal, it reacquires all scopes in canonical order with an
+exclusive envelope-scope lease
+and shared inspection leases for the other effective scopes. It revalidates
+pause state, active/skipped membership, generations, evidence, and the filtered
+result; if membership or any consulted generation changed, it releases the
+leases and reevaluates instead of committing stale output. Otherwise it
+discards skipped scopes from participation and atomically persists the proposal,
+verifier, digest, cached
+result, idempotency metadata, and expiry, advances the envelope generation once,
+and holds the leases through response construction. Concurrent issuances
+therefore serialize without attempting an in-place shared-to-exclusive upgrade.
+The response's `consulted_scopes` reports the revalidated evaluation
+generations, while its top-level envelope generation is the post-issuance value.
+
+Before `log` or a proposal-based `correct` persists cross-scope `evidence_ids`,
+it computes every referenced scope, acquires the destination scope's exclusive
+lease and each other referenced scope's shared lease in canonical scope-key
+order, then revalidates that every evidence record is present, active, and in an
+allowed effective scope. A paused referenced scope returns the exact `paused`
+envelope before mutation. Missing, moved, forgotten, inactive, or disallowed
+evidence returns `evidence_conflict` without mutation. This prevents a
+concurrent forget or scope move from creating dangling references.
+
+The target `memory forget` operation is a hard deletion, not a permanent
+tombstone containing the forgotten data. Forget and scope-changing operations
+compute the provenance closure of affected scopes, acquire every scope's write
+barrier in canonical scope-key order, then revalidate the closure and retry if
+it expanded. This prevents deadlocks and covers dependencies such as a global
+Signal supporting project Policies.
+
+Deletion linearizes only after every required write barrier is acquired. Readers
+that already hold a shared lease may finish before that point; afterward no
+reader can return or apply the pre-forget state. Under those barriers, forget
+atomically rewrites JSONL without the selected records, removes legacy embedded
+records, and follows provenance and record links through all dependent memory.
+Policies, Decisions, and Corrections that contain or derive from forgotten
+evidence are re-derived or redacted; if they cannot remain meaningful without
+that evidence, they are deleted. Forgetting a Decision also removes its linked
+Corrections.
+For every deleted, redacted, or re-derived record, forget also replaces each
+affected operation entry with the terminal `forgotten` marker and removes its
+original payload, digest, result identity, and cached result; replay can never
+return a pre-forget representation even when a sanitized record survives.
+If an affected Decision is proposal-backed, the same transaction terminalizes
+its proposal-consumption mapping and removes the proposal verifier and cached
+result even when the sanitized Decision survives. Later proposal-ID requests
+return only `forgotten: true` and cannot replay pre-forget fields.
+Retrieval must exclude the selected IDs, dependent records, and derived content
+from the deletion linearization point onward, with no dangling references. An
+interrupted compaction resumes before any affected scope is
+available again. Only a non-
+sensitive operation ID and terminal `forgotten` replay marker may remain to
+prevent a timed-out retry from recreating forgotten data; remove the canonical
+payload and its digest so retained state cannot test guesses about forgotten
+content. The current CLI has no `memory forget` command and still has dual
+profile/JSONL persistence, so this behavior is a release blocker rather than a
+claim about today's implementation.
+
+Caller-selected record and proposal forget roots are validated against the
+envelope scope before closure expansion. Cross-scope barriers and deletion apply only to dependent or
+derived records discovered by the server from those valid local roots; callers
+cannot nominate a foreign-scope record directly.
+
+## Target CLI Contract
+
+The stable agent-facing interface should use a versioned namespace with JSON on
+stdin and stdout:
+
+```text
+decision-agent agent-v1 observe   # store a scoped Signal
+decision-agent agent-v1 decide    # propose a choice using relevant memory
+decision-agent agent-v1 log       # record a confirmed or executed Decision
+decision-agent agent-v1 correct   # attach a Correction and optional reason
+decision-agent agent-v1 explain   # show evidence for a Decision or Policy
+decision-agent agent-v1 memory    # list, pause, resume, scope, or forget memory
+decision-agent agent-v1 doctor    # report compatibility and runtime readiness
+```
+
+Each invocation reads exactly one UTF-8 JSON object from stdin and writes
+exactly one JSON object to stdout. The common request envelope is:
+
+```json
+{
+  "contract": "agent-v1",
+  "request_id": "caller UUID",
+  "scope": {"kind": "project", "id": "stable opaque ID"},
+  "operation_id": "caller UUID for proposal issuance or mutations",
+  "expected_generation": 4,
+  "input": {}
+}
+```
+
+`contract`, `request_id`, and `input` are always required. `scope` is required
+except for `doctor`; global scope is `{"kind":"global","id":"user"}`.
+`operation_id` is required only for `decide`, `observe`, `log`, `correct`, and
+memory `pause`, `resume`, `scope`, or `forget`. `expected_generation` is
+required for
+pause and resume; `scope` instead requires source `expected_generation` plus
+input `target_expected_generation`; forget omits it. Unknown fields or enum
+values fail validation. UUIDs use canonical RFC 4122 text, generations are
+unsigned 64-bit integers, opaque IDs are 1–256 UTF-8 bytes, each free-text field
+is at most 16 KiB, arrays contain at most 100 items, and the complete request is
+at most 256 KiB. Confidence is a JSON number from 0 through 1. Except where
+marked optional or nullable below, every listed field is required and additional
+input fields are rejected.
+
+Command-specific `input` fields are:
+
+- `observe`: `kind` (`choice`, `rejection`, `constraint`, `tradeoff`, `example`,
+  `reason`, or `outcome`), `summary`, `provenance` (`source` is `user_statement`,
+  `user_action`, or `agent_inference`, plus opaque `reference`), and
+  `confidence`, plus nullable `decision_id`; `decision_id` is required exactly
+  for `outcome`. An outcome observation atomically creates the linked Signal and
+  appends its ID to the Decision's outcome links. That Decision must belong to
+  the envelope scope; any target outside it fails with `evidence_conflict`
+  before mutation, so a global envelope accepts a global Decision while a
+  project envelope rejects global and foreign-project targets. This path holds
+  only the envelope scope's exclusive lease. Inferred provenance must
+  reference its user-authored basis and remains lower-priority evidence that
+  cannot directly activate a Policy;
+- `decide`: `context`, two or more `alternatives` (`id`, `label`, optional
+  `details`) with unique IDs, and optional `constraints` string array;
+- `log`: `selected_option`, `actor` (`user` or `agent`), `status` (`confirmed` or
+  `executed`), and either a complete `proposal` object or the explicit fields
+  `context`, `alternatives`, `rationale`, `evidence_ids`, `confidence`, optional
+  `constraints`, and optional `unresolved_uncertainties`. A proposal has the
+  same fields defined for `correct`; proposal-backed requests reject the
+  explicit-only fields as additional input, and the two forms are mutually
+  exclusive. Rejection is
+  accepted only by `correct`, which atomically creates the linked Correction.
+  For a proposal-backed log, `selected_option` must equal `recommended_option`; a
+  mismatch fails with `invalid_request` without consuming the proposal and must
+  be submitted through proposal-based `correct` as an override. After the
+  shared filter, every carried proposal field must match the complete canonical
+  proposal digest stored at issuance; any mismatch returns `proposal_conflict`
+  without consuming the proposal or persisting a Decision;
+- `correct`: nullable `decision_id`, nullable `correction_id`, nullable
+  `proposal` (`proposal_id`, `context`, `alternatives`, `recommended_option`,
+  `rationale`, `evidence_ids`, `confidence`, optional `constraints`, optional
+  `unresolved_uncertainties`), nullable `corrected_choice`, and
+  nullable `new_alternative` (`id`, `label`, optional `details`), and nullable
+  `reason`; exactly one of `decision_id`, `correction_id`, or `proposal` is
+  required, and either correction field may be null for a pure rejection. A
+  `decision_id` must name a Decision in the envelope scope, `correction_id` must
+  name an `unresolved` or `explained` Correction there, and a proposal must have
+  been issued in that scope; any target outside the envelope fails with `evidence_conflict`
+  before engine use or mutation. The pre-lease lookup is only preliminary; the
+  authoritative target check occurs under the leases defined below. A global
+  envelope therefore accepts global targets, while a project envelope rejects
+  global and foreign-project targets. A `correction_id` resolves that record rather than creating another
+  one. The command merges supplied values with that Correction. When both the
+  resulting corrected choice and reason are known it becomes `applied`; a
+  reason without a choice makes it `explained`; a choice without a reason may
+  guide future decisions but leaves the Correction `unresolved` so the reason
+  can be attached later. It never rewrites the linked Decision's historical
+  selection, actor, status, rationale, or evidence. Every newly created
+  Correction stores one immutable canonical `rejected_option`: the linked
+  Decision's `selected_option`, including the rejected Decision created from a
+  proposal's `recommended_option`. The first non-null corrected choice also atomically creates
+  one linked, active, exact-context choice Signal whose provenance is the
+  Correction ID; it records the explicit choice without inventing a reason. Its
+  match key is the Correction's scope, Decision context, corrected choice,
+  ordered Decision alternatives with any supplied `new_alternative` appended,
+  and constraints. It may influence a later decision only when that complete
+  key matches, and idempotent resolution never duplicates it. When
+  `corrected_choice` is null on a newly created Decision- or proposal-based
+  Correction, whether `reason` is null or known, the same mutation instead
+  creates one linked, active, exact-context rejection Signal.
+  Its match key is the Correction's scope, Decision context, canonical rejected
+  option, ordered alternatives, and constraints; it may suppress that option
+  only when all of those fields match and cannot support a Policy without a
+  later reason. The Signal remains linked when that exact Correction is later
+  resolved, and idempotent creation or resolution never duplicates it. At least
+  one of `reason` or
+  `corrected_choice` is required with `correction_id`; only `applied` is terminal
+  and cannot be resolved again. Once a Correction has a non-null corrected
+  choice, later resolution may omit it or repeat the same ID but cannot replace
+  it; a different choice returns `invalid_request` before changing the
+  Correction, Decision, or linked Signal. The same immutability rule applies to
+  a non-null reason: later resolution may omit it or repeat the same filtered
+  reason but cannot replace it. A different reason returns `invalid_request`
+  before changing the Correction or any linked Signal or Policy, so existing
+  Policy provenance never changes meaning in place.
+  Proposal-based `correct` applies the same full canonical proposal-digest check
+  as proposal-backed `log` before validating or storing the correction. The
+  digest covers context, ordered alternatives and their complete fields,
+  recommendation, rationale, evidence IDs, confidence, constraints, unresolved
+  uncertainties, and all other proposal fields after filtering; it excludes
+  only transport metadata;
+- `explain`: `target_type` (`decision` or `policy`) and `target_id`;
+- `memory`: `action` (`list`, `pause`, `resume`, `scope`, or `forget`); list
+  accepts optional `limit` (1–100, default 50), nullable opaque `cursor`, and
+  optional `types` array containing `signal`, `policy`, `decision`, or
+  `correction`; `forget` accepts `record_ids` and `proposal_ids` string arrays,
+  requires at least one to be non-empty, and requires every caller-selected
+  record or proposal to belong to the envelope scope; `scope` requires non-empty
+  `root_record_ids`, `target_scope`, and `target_expected_generation`; pause and
+  resume take no other fields;
+- `doctor`: no fields.
+
+Successful responses use this envelope:
+
+```json
+{
+  "contract": "agent-v1",
+  "ok": true,
+  "request_id": "echoed caller UUID",
+  "scope": {"kind": "project", "id": "stable opaque ID"},
+  "generation": 5,
+  "consulted_scopes": [
+    {"scope": {"kind": "project", "id": "stable opaque ID"}, "generation": 5}
+  ],
+  "result": {},
+  "replayed": false
+}
+```
+
+`scope` and `generation` are omitted only by `doctor`. `consulted_scopes` is a
+required array of `{scope, generation}` pairs for `decide` and `explain`, in
+canonical scope-key order, and omitted by other commands. Every mutation result
+has `affected_scopes`, a canonical array of every changed scope and its post-
+commit generation; single-scope mutations return one element, while scope moves
+and cross-scope forget return all changed scopes. Mutation results also include
+created record IDs; `decide` returns `proposal_id`, `expires_at`, filtered
+proposal fields, recommendation, evidence IDs, confidence, and unresolved
+uncertainties;
+`explain` and list return filtered records; a successful active list returns
+`items` in ascending `(created_at,
+id)` order and nullable `next_cursor`; memory controls return current state and
+generation. Replays set `replayed` and obey the pause, forget, and generation
+rules below.
+
+Errors after envelope validation use the same `contract`, `request_id`, and
+applicable scope metadata with `ok: false` and
+`error: {"code", "message", "retryable"}`. For malformed JSON or an invalid or
+missing common field, the server still emits one JSON error with
+`contract: "agent-v1"`, `request_id: null` unless the supplied value is a valid
+UUID, and no scope metadata. Stable codes are
+`invalid_request`, `unsupported_contract`, `sensitive_rejected`, `paused`,
+`not_found`, `forgotten`, `moved`, `operation_conflict`, `generation_conflict`,
+`scope_dependency_conflict`, `proposal_conflict`, `evidence_conflict`,
+`stale_cursor`, `stale_control`, and `runtime_unavailable`.
+Validation and contract errors exit 2; state, idempotency, pause, scope, and
+generation conflicts exit 3; privacy rejection exits 4; missing or forgotten
+targets exit 5; runtime failure exits 6. Success, including an ordinary safe
+replay of an existing mutation, exits 0. A terminal replay after forgetting is
+exactly `ok: false`, top-level `replayed: true`, no `result` or
+`affected_scopes`, and `error: {"code":"forgotten","message":"forgotten",
+"retryable":false}`; it exits 5 and may include only the envelope scope's non-
+sensitive current generation. Diagnostics go to stderr; failures never emit a
+partial success or mutation. A conflict response returns only non-sensitive
+identity and current control metadata, never either payload.
+
+The exact paused envelope for any operation that fails because a required scope
+is paused is `ok: false`, has
+`replayed: true` only for an idempotent replay, has no `result`,
+`affected_scopes`, `consulted_scopes`, target, evidence, locations, record IDs,
+or record counts, and uses
+`error: {"code":"paused","message":"paused","retryable":false}`; it exits 3.
+It may include only the request's envelope scope and its non-sensitive current
+generation. This response takes precedence whenever the envelope, a referenced
+evidence scope, or a mandatory target or supporting scope is paused.
+The explicitly allowed paused-scope forms of `memory list`, `forget`, `pause`,
+and `resume` retain their separately defined behavior.
+
+A terminal replay after a record or proposal has moved is exactly `ok: false`,
+top-level `replayed: true`, no `result`, `affected_scopes`, target scope, or
+record fields, and `error: {"code":"moved","message":"moved",
+"retryable":false}`; it exits 5 and may include only the original envelope
+scope's non-sensitive current generation. This envelope applies both to an
+operation marker and to a proposal-consumption marker.
+
+A stale control replay is exactly `ok: false`, top-level `replayed: true`, no
+`result` or `affected_scopes`, and `error: {"code":"stale_control",
+"message":"stale control operation","retryable":false}`; it exits 3. For a
+stale `pause` or `resume`, it includes the envelope `scope`, its current
+`generation`, and `control: {"paused": true-or-false}`. For a replayed scope
+move whose records have since split or moved again, `control` instead contains
+`locations`: a canonical scope-key-ordered array covering every current
+destination of the original moved closure. Each entry contains that `scope`,
+its current `generation`, and the closure's live opaque `record_ids` in sorted
+order; every live record appears exactly once. A forgotten record invokes the
+terminal forgotten rule instead of returning a partial location map. A caller
+must issue a new control operation with a new operation ID and freshly read
+generations.
+
+Pause takes precedence over the stale-control envelope. If any scope
+participating in a scope move or its lineage replay is paused, it returns the
+exact paused envelope above, additionally omits `control`, and exposes only the
+original envelope scope's non-sensitive current generation. After every
+participating scope resumes, the operation may be retried under freshly
+acquired barriers.
+
+The existing `decision-agent decide <profile> <request>` and `train` commands
+remain the frozen numeric MVP and keep their positional-file contract. The
+published Skill uses only `agent-v1`; a future incompatible agent contract gets
+a new namespace instead of silently changing existing scripts.
+
+`agent-v1 decide` must not imply `log`: proposing and confirming are distinct.
+It returns a proposal ID and the filtered proposal fields needed for an atomic
+`correct` if the proposal is immediately rejected; the proposal ID alone is not
+a durable Decision. All responses include a contract version and machine-
+readable IDs. Commands that store, retrieve, or apply memory use the relevant
+scope's read/write barrier; proposal consumption also uses a unique proposal-ID
+constraint.
+
+An unconsumed proposal expires 24 hours after issuance; `expires_at` is the
+immutable UTC deadline. Every proposal read, replay, log, correct, or forget
+checks that deadline even if background cleanup has not run. At expiry the
+server logically treats the proposal as forgotten immediately. There is no
+pre-expiry reader grace period: after acquiring every required lease and after
+all filtering or other processing, the server rechecks `expires_at` at the last
+possible point before constructing a proposal-bearing response or committing a
+proposal mutation. If the deadline has arrived, it returns the terminal
+forgotten envelope and performs no mutation or payload return. A per-user
+cleanup worker runs at least every 15 minutes. While the runtime is available,
+it begins deletion within 15 minutes of expiry and completes as soon as it can
+acquire the envelope scope's exclusive barrier; a pre-existing lease may extend
+physical retention only until that lease drains. It then deletes the filtered
+payload, verifier, issuance digest, and cached result; only the non-sensitive
+terminal forgotten markers needed to prevent retry recreation remain. Before
+accepting any command, runtime startup performs the same scan and finishes
+interrupted cleanup, covering time when the machine or cleanup service was not
+available. The 15-minute bound therefore counts cleanup-runtime availability,
+not wall-clock time while the machine is off.
+A consumed proposal cancels expiry and follows its Decision's lifecycle.
+`memory forget` with an unconsumed proposal ID performs the same deletion
+immediately; with a consumed proposal ID it expands through the mapped Decision
+and its dependent closure.
+
+Every `decide`, `observe`, `log`, `correct`, and mutating `memory` request
+includes a caller-generated `operation_id` (UUID) that is stable across retries
+of one logical operation. The idempotency identity is
+`(scope, command, operation_id)`:
+
+The compared canonical idempotent-operation payload is the filtered command-
+specific `input` plus any expected-generation fields, serialized with RFC 8785
+JSON Canonicalization Scheme rules. It excludes `request_id`, `operation_id`, JSON
+member order, whitespace, and other per-attempt transport metadata. A retry may
+use a fresh `request_id`; changing any compared semantic field is a conflict.
+Before canonicalization, `record_ids`, `proposal_ids`, and `root_record_ids` are
+treated as unordered sets: reject duplicates and sort by opaque ID. Semantic
+arrays such as `alternatives` retain their submitted order.
+
+- the same identity and canonical request payload returns the original result
+  with `replayed: true` and creates no additional record or proposal; a retried
+  `decide` therefore returns the identical proposal ID and filtered proposal;
+- the same identity with a different canonical payload returns a conflict and
+  performs no mutation while the original record exists;
+- after forgetting, the terminal `forgotten: true` result takes precedence for
+  that identity regardless of the retry payload, because no payload verifier is
+  retained; it performs no mutation and reveals no original result fields;
+- a timeout is retried with the same `operation_id`; a new logical proposal,
+  observation, decision, or correction always receives a new one;
+- the operation ID, payload digest, and result identity are retained while the
+  mutation record or issued proposal exists. Proposal issuance metadata remains
+  bound to the proposal through consumption, movement, or forgetting. After
+  forgetting, only the operation ID and a non-
+  sensitive terminal replay marker remain so a delayed retry cannot recreate
+  deleted memory.
+
+Scoped state has a monotonically increasing generation that advances on every
+committed data or control mutation. `pause` and `resume` requests include the
+caller's expected generation and perform a compare-and-set under the write
+barrier. Their responses always include the current state and generation.
+Replaying either control operation re-reads that state: it returns the original
+success only while its resulting generation is still current; otherwise it
+returns the exact `stale_control` envelope above and never claims that the old
+state is active.
+
+`memory scope` moves records; it does not change a client default, copy records,
+or change unrelated records. Every root must belong to the envelope scope and
+the target must differ. A global source cannot target a project scope; that
+request fails with `invalid_request` before closure expansion because global
+evidence may support multiple projects. The server expands valid roots to the complete
+referential closure, including any number of linked records, proposal mappings,
+operation metadata, and prior move-lineage markers; callers never enumerate
+internal state or the full closure. Under every discovered lineage, source, and
+target barrier, the command revalidates the closure, compares the supplied
+source and target generations, and verifies that every source and target scope
+is active before atomically rewriting the scope of the full closure. A paused
+scope returns the exact paused envelope above and moves nothing. Original
+operation identities are never re-keyed into the target scope:
+each becomes a non-
+sensitive `moved: true` terminal marker in the source scope, and moved records
+retain an internal provenance pointer to that marker. A delayed original retry
+therefore cannot recreate the record, and an unrelated target-scope operation
+with the same UUID cannot collide. If the server cannot resolve a complete,
+consistent closure, it returns `scope_dependency_conflict` with non-sensitive
+missing record IDs and moves nothing.
+
+A valid global evidence reference is an external dependency, not a member of a
+project move closure. The server stops traversal at that edge, acquires the
+global shared lease, and revalidates the evidence through commit, but never
+moves the global record or traverses its reverse dependents. Evidence from any
+other project is invalid for the target effective scope and fails with
+`scope_dependency_conflict` before mutation.
+
+Global Policies may reference only global-scope Signals and Corrections. Project
+evidence must never be attached directly to a global Policy. Generalization
+requires a separate, deliberately global `observe` call containing a minimized,
+filtered summary and global-safe provenance without a project record ID; the
+resulting global Signal can then support the Policy. Consequently global
+`explain` can return the Policy's complete inspectable provenance entirely from
+its global effective scope, while project `explain` may additionally show local
+Policies that reference global evidence.
+
+For a moved proposal-backed Decision, the same transaction leaves a non-
+sensitive `moved: true` proposal marker in the source scope and creates the live
+proposal-to-Decision mapping in the target. A delayed source `log` or `correct`
+returns only the moved marker; it never returns target content or recreates the
+Decision. Any existing target mapping for that proposal ID causes
+`proposal_conflict` before mutation.
+
+Every scope move also updates the non-sensitive move lineage for all earlier
+source markers in the selected records' history. Replaying a scope move follows
+that lineage under the applicable barriers and never returns cached generations.
+If the records still reside in the requested target, it returns `replayed: true`
+with freshly read `affected_scopes`; if they moved again, it returns
+the exact `stale_control` envelope with the complete canonical `locations` map
+defined above; if forgotten, the terminal forgotten rule takes precedence.
+
+An active list cursor is an opaque, integrity-protected token bound to contract,
+scope, generation, type filter, and the last `(created_at, id)` key; it contains
+no record content. Pagination holds the shared lease only for one page. Reusing
+a cursor after the scope generation changes returns `stale_cursor`, requiring a
+restart, so a traversal never silently mixes snapshots. A paused list ignores
+record pagination fields and returns only the control metadata defined above.
+
+The target models are:
+
+- `Signal`: kind, summary, provenance, optional linked Decision or Correction ID, scope,
+  confidence, status, `created_at`, and any other lifecycle timestamps;
+- `Policy`: text, scope, supporting and contradicting signal IDs, status,
+  supporting and contradicting Correction IDs, and `created_at`;
+- `Decision`: context, alternatives, selected option, actor, scope, status,
+  rationale, evidence IDs, confidence, optional constraints, unresolved
+  uncertainties, outcome Signal IDs, and `created_at`;
+- `Correction`: decision ID, immutable canonical rejected option, corrected
+  choice, nullable reason, scope, status
+  (`unresolved`, `explained`, or `applied`), resulting changes, and
+  `created_at`. Corrected choice is nullable for a pure rejection. `unresolved`
+  means a reusable reason is still missing, even when the choice has already
+  changed; `explained` has a reason but no replacement choice, and `applied` has
+  both and is terminal.
+
+Every `created_at` above is an immutable UTC timestamp assigned at record
+creation and forms the universal list ordering key with the record ID.
+
+A Decision's alternatives, selected option, actor, status, rationale, evidence,
+confidence, constraints, and unresolved uncertainties are immutable historical
+facts after creation. Later Corrections and outcome Signals are linked records;
+they do not rewrite those fields. `applied` means the Correction affects future
+decision behavior, not that the original Decision is retroactively changed.
+
+Signal status is `candidate`, `active`, or `retired`. `observe` creates direct
+`user_statement` and `user_action` evidence as `active`, but creates
+`agent_inference` as `candidate`; candidate Signals are inspectable but cannot
+be cited or applied. Corroboration by an active user Signal or Correction may
+promote a candidate to active. Superseded evidence becomes retired and is never
+applied; reactivation creates a new record rather than rewriting its history.
+
+Policy status is `candidate`, `active`, or `retired`. A newly inferred Policy is
+candidate. It becomes active only from a sufficiently specific direct
+Correction with a known reason or corroboration by distinct active Signals;
+candidate Policies are inspectable but never applied. A later Correction may
+retire a candidate or active Policy. Only active Signals and Policies satisfy
+evidence validation or influence `decide`; Correction and Decision statuses use
+their separately defined lifecycles.
+
+A proposal-based `correct` always records the immediately rejected Decision
+with the proposal's `recommended_option`, `actor: "agent"`, and
+`status: "rejected"`; the Correction carries the user's replacement and reason
+when known. The operation does not attribute the proposal recommendation or its
+rationale to the user. When a Correction reason
+activates or changes a Policy, that Policy must include the Correction ID in its
+supporting or contradicting Correction links so provenance traversal, explain,
+and forget can find it.
+
+`correct` may create or mutate a Policy only in its envelope scope. Applicable
+global Policies are read-only external evidence during a project correction;
+the correction may create a narrower project Policy that supports or
+contradicts them, but it never rewrites the global record. Updating a global
+Policy requires a separate global-scoped evidence flow. Every `correct` path,
+including Decision- and Correction-ID forms, computes its possible effective
+scope keys before evidence discovery, coalesces each scope to its strongest
+required lease mode, and acquires the resulting set in canonical order. The
+envelope scope is exclusive from the start because the Correction and possibly
+its Policies change there; any other effective scope is shared. A global
+correction therefore takes one global exclusive lease rather than a shared
+lease followed by an upgrade. Under those leases the command discovers and
+revalidates applicable Policies and revalidates the target Decision,
+Correction, or proposal for existence, envelope ownership, lifecycle status,
+pause state, and, where applicable, proposal digest and expiry. It retries
+discovery if the participating set expands and performs no engine use or
+mutation until the locked revalidation succeeds. It retains all leases through
+Correction, Signal, and Policy persistence and response construction, and all
+scopes remain in the operation's participating set for replay suppression.
+
+Alternative IDs are unique within each request and durable Decision.
+`recommended_option` and `selected_option` must equal exactly one submitted
+alternative ID. A non-null `corrected_choice` must equal one alternative ID on
+the referenced Decision or submitted proposal, or the ID of the supplied
+`new_alternative`, and must differ from the Correction's canonical
+`rejected_option`. Repeating that option is not a correction and returns
+`invalid_request` before creating a contradictory choice Signal; a later
+re-acceptance is logged as a new Decision. A new alternative ID must not
+collide with an existing one;
+when supplied, `corrected_choice` must equal its ID. It is stored on the
+Correction together with the complete `new_alternative`; the immutable original
+Decision is not changed. A later Decision may include that alternative when the
+linked choice Signal is reused. Unknown, mismatched, or duplicate IDs fail with
+`invalid_request` before engine use or mutation.
+
+## State and Safety
+
+Store personal decision data outside the installed Skill. Resolve state in this
+order: `DECISION_AGENT_HOME`, project configuration, then the OS user-data
+directory. Default observations to project scope; promote to global scope only
+when the evidence clearly applies across projects.
+
+The Skill must not read, print, rotate, or copy Gateway secrets. LLM use remains
+an explicit runtime configuration and must not silently fall back to a different
+engine. Decision Agent recommendations never expand permission for external or
+destructive actions.
+
+## Packaging and Distribution
+
+Keep the future Skill at `skills/decision-agent/` in this repository. Include
+only `SKILL.md`, `agents/openai.yaml`, and a thin compatibility launcher if the
+CLI cannot be invoked directly. Keep user state and business logic out of the
+Skill directory.
+
+Release the CLI and Skill from the same immutable Git tag. Install the CLI with
+`uv tool install` or `pipx`, then install `skills/decision-agent` from the same
+tag with the Codex Skill installer. The Skill checks the CLI contract version
+with `decision-agent agent-v1 doctor` and refuses incompatible combinations.
+Installation also configures a user-level OS timer or equivalent always-on
+worker for proposal cleanup. `doctor` fails readiness when that cleanup service
+is absent, disabled, late, or cannot access the configured state directory.
+
+Do not publish the Skill until:
+
+- `observe`, `decide`, `log`, `correct`, `explain`, and memory controls have a
+  stable contract;
+- schema conformance tests cover every request, success, error, exit code,
+  unknown field, required field, and command-specific result in the JSON
+  contract;
+- JSONL/profile dual history persistence is resolved;
+- concurrent mutation and retry tests pass;
+- timed-out mutation retries deduplicate by `operation_id`, payload conflicts
+  fail closed before forgetting, and any reuse of a forgotten operation identity
+  returns the exact terminal error envelope without recreating memory;
+- timed-out `decide` retries return exactly one proposal ID per operation and
+  cannot be consumed into duplicate Decisions; replay also suppresses the
+  cached proposal when any consulted scope is paused;
+- concurrent decide tests prove evaluation snapshots are revalidated before an
+  exclusive, single-generation issuance commit with no lease upgrade deadlock,
+  and a paused envelope prevents engine use and issuance even when global memory
+  is active;
+- idempotency canonicalization tests vary request IDs, member order, whitespace,
+  record-ID permutations, duplicates, and semantic arrays or fields to
+  distinguish replay, validation failure, and conflict;
+- immediate proposal rejection atomically creates one rejected Decision and one
+  linked Correction; a pure rejection also creates exactly one linked active
+  exact-context rejection Signal that affects a fully matching next decision
+  without creating a Policy, and concurrent proposal consumption by `log` or
+  `correct` creates no duplicate Decision across different operation IDs or
+  after its terminal proposal marker is forgotten;
+- proposal-backed log rejects a selected/recommended mismatch without consuming
+  the proposal, while proposal-based correct records the rejected recommendation
+  with a fixed agent actor and never attributes its rationale to the user;
+- proposal consumption tests alter each carried proposal field and require a
+  pre-mutation `proposal_conflict` unless the complete canonical digest matches;
+  schema tests also reject duplicated explicit log fields in proposal mode;
+- unresolved-correction tests target `correction_id` and prove later reasons or
+  replacements transition that exact record without creating duplicates;
+  choice-only changes remain resolvable, and explained records accept a later
+  choice before becoming terminal;
+- choice-only correction tests create exactly one linked active Signal, reuse it
+  only when scope, context, corrected choice, ordered alternatives including any
+  appended new alternative, and constraints all match; they do not affect
+  near-miss contexts, never invent a reason or broad Policy, reject later choice
+  replacement, retain a supplied new alternative on the Correction, and never
+  rewrite the original Decision;
+- correction reason tests allow an existing reason to be omitted or repeated
+  while completing the same Correction, reject replacement before mutating the
+  Correction or linked Signals or Policies, and preserve the meaning of every
+  existing Policy provenance link;
+- no-replacement rejection tests for Decision- and proposal-based corrections,
+  with either a null or known reason, create one
+  linked active rejection Signal, derive the same canonical rejected option
+  from a Decision's selection and a proposal's recommendation, match scope,
+  context, rejected option, ordered alternatives, and constraints exactly,
+  avoid the rejected option on a matching next decision, do not affect near-miss
+  contexts, never infer a reason or Policy, reject a later corrected choice that
+  repeats the rejected option, and never duplicate the Signal on retry or later
+  resolution;
+- correction target tests reject foreign Decision, Correction, and proposal IDs
+  before engine use or mutation while accepting same-scope global targets, and
+  move or retire each target between preliminary lookup and lease acquisition to
+  prove the locked ownership and lifecycle revalidation fails closed;
+- correction lease tests coalesce global read/write access into one exclusive
+  lease acquired in canonical order before evidence discovery, cover concurrent
+  global corrections, and prove no shared-to-exclusive upgrade can occur;
+- outcome tests create a Decision-linked outcome Signal atomically and prove
+  explain, scope movement, and forget follow the bidirectional provenance;
+  same-scope global Decisions succeed, while every cross-scope ID fails before
+  mutation;
+- scoped pause concurrency tests prove no memory is stored, retrieved, or
+  applied after pause succeeds and before resume succeeds, including reads that
+  began before pause;
+- pause and resume replay tests require the exact `stale_control` envelope and
+  current scope generation, prove ordinary cached mutation results stay hidden
+  while paused, and prove paused list exposes only non-sensitive control
+  metadata; control replays are explicitly exempt from generic pause precedence;
+- participating-scope replay tests pause global evidence or one affected forget
+  scope and prove no cached result, evidence, scope list, ID, or count escapes;
+- paused dependency tests require the same exact `paused` envelope for referenced
+  evidence and for an `explain` target or discovered support scope, while still
+  allowing irrelevant paused non-envelope scopes to be skipped;
+- sensitive-data filtering and hard-deletion tests prove rejected or forgotten
+  content and all dependent or derived content are absent from retrieval, every
+  returned field is scope-checked and filtered, rejected decision inputs never
+  reach an engine, and forgotten payload digests, cached results, and replay
+  metadata for every affected record are removed or terminalized;
+- proposal-backed re-derivation tests prove forget terminalizes proposal
+  mappings and removes their verifiers and cached results;
+- unconsumed proposal tests cover explicit proposal-ID forget, immediate logical
+  expiry, expiry after initial validation but immediately before response or
+  mutation, cleanup attempt within 15 minutes of runtime availability without
+  later proposal access, completion after a blocking lease drains, startup
+  recovery after downtime, scheduler failure in `doctor`, terminal retry
+  behavior, and consumed proposal closure deletion;
+- forget race tests cover readers that precede the deletion linearization point
+  and deterministic barrier acquisition for cross-scope dependencies;
+- forget root tests reject caller-selected foreign records while still allowing
+  server-discovered cross-scope dependents to be removed or re-derived;
+- scope tests prove explicitly selected roots and their server-expanded closure
+  move atomically, including closures over 100 records; source replay markers
+  prevent delayed recreation, target UUID and proposal collisions fail before
+  mutation, paused source or target scopes reject the move, and proposal
+  mappings cannot recreate or expose moved Decisions;
+- scope validation rejects every global-to-project move before closure expansion;
+- scope closure tests prove global evidence is locked and revalidated but never
+  moved or traversed, foreign-project evidence fails before mutation, and a
+  global Policy cannot directly reference project provenance;
+- global explain tests require every supporting record to be global-scope and
+  return complete filtered provenance without cross-project reads;
+- multi-scope response tests require complete, canonical `affected_scopes`, and
+  scope replay tests cover unchanged targets, later moves, split destinations,
+  and forgetting; split-destination tests require every live record from the
+  original closure exactly once in the canonical `locations` map, while any
+  paused destination suppresses that map and all record counts;
+- moved operation and proposal retry tests require the exact terminal `moved`
+  envelope and prove that it reveals no target scope or record content;
+- proposal/log/model conformance tests preserve unresolved uncertainties, and
+  every listable record type supplies immutable `created_at` for stable paging;
+- correction-derived Policy tests require durable Correction evidence links and
+  prove dependent policies are removed or re-derived when that provenance is
+  forgotten; project corrections can create or change only project Policies and
+  never mutate an applicable global Policy;
+- every correction form locks and revalidates global Policy evidence through
+  commit and records those scopes for pause-safe replay;
+- Signal and Policy lifecycle tests cover creation defaults, promotion,
+  retirement, and exclusion of candidate or retired records from decisions and
+  evidence references;
+- effective-scope tests cover project-plus-global reads, paused-scope exclusion,
+  canonical multi-scope leasing, the `consulted_scopes` wire field, and reported
+  generations;
+- cross-scope mutation races prove `log` and proposal-based `correct` revalidate
+  evidence under all leases and never commit dangling references;
+- list pagination tests cover stable ordering, bounds, filters, paused output,
+  tampered cursors, and generation changes between pages;
+- trigger and non-trigger prompts pass fresh-agent tests;
+- provenance and alternative-reference tests cover inferred evidence priority,
+  duplicate IDs, explicit-log constraints, new correction alternatives, and
+  every recommendation, selection, and correction path;
+- an end-to-end test covers natural observation, decision, correction reason,
+  and a changed later decision;
+- documentation clearly distinguishes implemented behavior from target design.
+
+A Plugin or MCP server is a later packaging option when reliable structured tool
+discovery or one-step installation becomes more important than a standalone
+Skill. It is not required for the first distributable version.
