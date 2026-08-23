@@ -33,10 +33,24 @@ PYTHONPATH=src uv run python -m decision_agent.cli review \
 
 Cloud-agent caveat: the Gateway is normally a **loopback-only** service on the
 owner's machine (macOS LaunchAgent). A Cloud Agent VM cannot reach the owner's
-`127.0.0.1:8787`. Provide a Cloud-reachable `DECISION_AGENT_GATEWAY_URL` (for
-example Tailscale / tunnel) plus `DECISION_AGENT_GATEWAY_TOKEN` as environment
-secrets, or run the Gateway inside the agent environment. Confirm `GET /readyz`
-succeeds before relying on `--engine llm`.
+Mac `127.0.0.1:8787`. In this Cloud environment, run the Gateway as a **sibling
+checkout** at `/local-agent-gateway` (clone
+`https://github.com/s-hiraoku/local-agent-gateway` if missing).
+
+Non-obvious Gateway startup notes (Cloud VM):
+
+- Runtime: Node **26.3.1** via nvm + pnpm 11.13.x. Prepend
+  `$HOME/.nvm/versions/node/v26.3.1/bin` to `PATH` (the VM's default `node` is 22).
+- Required Gateway env: `CODEXGW_API_TOKEN` (≥32 chars),
+  `CODEXGW_DATA_ENCRYPTION_KEY` (32-byte base64), `CODEXGW_REPOSITORIES_JSON`
+  (may be `[{"id":"decision-agent","path":"/workspace"}]`). Default listen is
+  `127.0.0.1:8787`.
+- Point `DECISION_AGENT_GATEWAY_TOKEN` at the same value as `CODEXGW_API_TOKEN`.
+- Dedicated Codex home: `CODEXGW_CODEX_HOME=$HOME/.codex-gateway`. Authenticate
+  with ChatGPT (`CODEX_HOME=$HOME/.codex-gateway codex login --device-auth`).
+  API-key-only Codex sessions are rejected by `/readyz`.
+- Confirm `GET /healthz` then `GET /readyz` (`{"status":"ready"}`) before
+  `--engine llm`. Start with `pnpm dev` from `/local-agent-gateway`.
 
 `heuristic` remains valid for unit tests, offline CI, and deterministic
 regression checks that intentionally avoid the Gateway.
