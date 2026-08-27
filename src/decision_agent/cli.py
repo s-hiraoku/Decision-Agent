@@ -117,7 +117,7 @@ def _main(argv: list[str] | None = None) -> int:
     if args.command == "review":
         profile = load_profile(args.profile)
         request = load_review_request(args.request)
-        records = load_decision_records(args.records) if args.records else None
+        records = load_decision_records(args.records) if args.records else ()
         agent = _agent(profile, args, parser)
         review = agent.review(request, history_records=records)
         print(json.dumps(review.to_dict(), indent=2, ensure_ascii=False))
@@ -134,13 +134,14 @@ def _main(argv: list[str] | None = None) -> int:
         request = load_review_request(args.request)
         review = load_review(args.review)
         feedback = load_feedback(args.feedback)
-        learned = DecisionAgent(profile).learn(request, review, feedback)
+        learned, record = DecisionAgent(profile).learn(request, review, feedback)
+        # Write order: JSONL first, then profile (detailed-design §3.5).
         if args.records:
-            append_decision_record(args.records, learned.decision_records[-1])
+            append_decision_record(args.records, record)
         save_profile(learned, args.output)
         print(
             json.dumps(
-                _learning_summary(learned, learned.decision_records[-1]),
+                _learning_summary(learned, record),
                 indent=2,
                 ensure_ascii=False,
             ),
@@ -155,17 +156,17 @@ def _main(argv: list[str] | None = None) -> int:
         records = load_decision_records(args.records)
         agent = _agent(profile, args, parser)
         review = agent.review(request, history_records=records)
-        learned = agent.learn(request, review, feedback)
-        append_decision_record(args.records, learned.decision_records[-1])
+        learned, record = agent.learn(request, review, feedback)
+        append_decision_record(args.records, record)
         save_profile(learned, args.output)
         print(
             json.dumps(
                 {
                     "review": review.to_dict(),
-                    "record": learned.decision_records[-1].to_dict(),
+                    "record": record.to_dict(),
                     "profile": str(args.output),
                     "records": str(args.records),
-                    "learning": _learning_summary(learned, learned.decision_records[-1]),
+                    "learning": _learning_summary(learned, record),
                 },
                 indent=2,
                 ensure_ascii=False,
@@ -178,7 +179,7 @@ def _main(argv: list[str] | None = None) -> int:
         cases = load_evaluation_cases(args.cases)
         if not cases:
             parser.error(f"no valid evaluation cases found in: {args.cases}")
-        records = load_decision_records(args.records) if args.records else None
+        records = load_decision_records(args.records) if args.records else ()
         report = _agent(profile, args, parser).evaluate(cases, history_records=records)
         print(json.dumps(report.to_dict(), indent=2, ensure_ascii=False))
         return 0
@@ -217,7 +218,8 @@ def _main(argv: list[str] | None = None) -> int:
         profile = load_profile(args.profile)
         for record in load_legacy_profile_decision_records(args.profile):
             append_decision_record(args.records, record)
-        save_profile(replace(profile, decision_records=()), args.output or args.profile)
+        # Save without decision_records; to_dict no longer emits the field.
+        save_profile(profile, args.output or args.profile)
         return 0
 
     parser.error(f"unknown command: {args.command}")

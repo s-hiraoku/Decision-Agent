@@ -246,26 +246,9 @@ violated_rule_id: str = ""  # 違反した PreferenceRule / PatternEntry の id(
 DecisionRecord に engine が保存されるため、後から「LLM レビューと heuristic レビューで
 delta の傾向がどう違うか」を JSONL から分析できる。
 
-### 3.5 決定履歴の Source of Truth 一本化（未実装の設計案）
+### 3.5 決定履歴の Source of Truth 一本化（実装済み）
 
-> **現在の実装:** `DecisionProfile.decision_records` は残っており、`learn` /
-> `iterate` は新しい record をプロファイルへ埋め込んで保存する。`--records`
-> 指定時は同じ record を JSONL にも追記するため、二重永続化である。
-> `migrate-history` は実行時点の埋め込み履歴を空にするが、後続の学習で再び
-> 埋め込まれる。以下は JSONL を唯一の Source of Truth にする将来設計である。
-
-**現状の問題:** 仕様書(設計原則 4)は「プロファイルは編集可能な要約、JSONL は
-append-only の生の証拠」と定めているが、現行実装はこれに反する。
-`DecisionProfile.decision_records` というフィールドが存在し、`DecisionAgent.learn`
-は毎回そこへレコードを追記した新しいプロファイルを返す。CLI の `learn` /
-`iterate` はその戻り値をそのまま `save_profile` するため、`--records` で
-JSONL に追記しているにもかかわらず、**同じ履歴がプロファイル JSON 側にも
-無制限に蓄積される**。反復するたびにプロファイルファイルが肥大化し、
-`review` / `evaluate` に `--records` を渡さなかった場合は
-`self.profile.decision_records`(プロファイル内の全履歴)を使うため、
-「どちらが正か」が呼び出し方によって変わる二重管理になっている。
-
-**設計方針:** `DecisionProfile` から `decision_records` フィールドを削除し、
+**方針:** `DecisionProfile` から `decision_records` フィールドを削除し、
 JSONL を履歴の唯一の Source of Truth とする。
 
 ```python
@@ -282,8 +265,8 @@ class DecisionProfile:
     # decision_records は削除。履歴は常に JSONL からロードする。
 ```
 
-- `DecisionAgent.learn` のシグネチャを変更し、更新済みプロファイルと新規
-  `DecisionRecord` を**別々の値として返す**。
+- `DecisionAgent.learn` は更新済みプロファイルと新規 `DecisionRecord` を
+  **別々の値として返す**。
   ```python
   def learn(
       self,
@@ -292,44 +275,20 @@ class DecisionProfile:
       user_feedback: UserFeedback,
   ) -> tuple[DecisionProfile, DecisionRecord]: ...
   ```
-  これにより CLI 側の `learned.decision_records[-1]`(「プロファイルの末尾要素を
-  取り出して JSONL に書く」という暗黙の結合。`--records` を渡さず `learn` を
-  呼んだ場合、このレコードはどこにも永続化されず消える)を解消する。
-- `DecisionAgent.review` / `evaluate` は `history_records` を必須の明示引数にする
-  (プロファイル内フォールバックを廃止)。「履歴を渡さない = 空」と単純化し、
-  §4 の履歴選別ステップは常に呼び出し側が渡した records に対して動く。
-- **書き込み順序:** `learn` を呼ぶ CLI コマンド(`learn` / `iterate`)は、
-  1. JSONL に新規 `DecisionRecord` を追記
-  2. 成功したら更新済みプロファイルを保存
-  の順で実行する。1 が失敗すればプロファイルは保存しない。2 が失敗しても
-  JSONL 追記は既に成立しているため履歴は失われない(この順序と atomic write
-  の必要性は §9 で扱う)。
-- **読み込み時の上限:** レコード数が増えた場合に備え、
-  `load_decision_records(path, limit=None)` を storage 層に用意する。
-  `limit` 指定時は「同一 task_type を優先し、`created_at` 降順で直近 N 件」を返す
-  (§4 の履歴選別はこの上限後の集合に対して動く)。
-
-**移行:** 旧形式プロファイル(`decision_records` を含む JSON)を読み込んだ場合、
-`DecisionProfile.from_dict` はそのフィールドを無視し、プロファイル本体
-(criteria / rules 等)だけを読む。埋もれていた履歴を失わずに JSONL へ
-移すため、1 回限りの移行コマンドを提供する。
-
-移行コマンドは通常の `DecisionProfile.from_dict` とは別に、旧 JSON から
-`decision_records` を直接読む legacy loader を使う。これにより、通常のプロファイル
-モデルが履歴を無視する状態になっても、移行前の埋め込み履歴を失わない。
+- `DecisionAgent.review` / `evaluate` は `history_records` を明示引数で受け取り、
+  省略時は空タプル（プロファイル内フォールバックなし）。
+- **書き込み順序:** `learn` / `iterate` は (1) JSONL へ追記 (2) プロファイル保存。
+- 旧形式プロファイルの `decision_records` は `from_dict` で無視する。埋もれた履歴は
+  `migrate-history` が legacy loader で JSONL へ移す（論理 fingerprint で重複抑止）。
 
 ```bash
 decision-agent migrate-history <old-profile.json> --records <records.jsonl>
 ```
 
-- 旧プロファイル内の `decision_records` を読み、`records.jsonl` に
-  追記する。
-- JSONL への追記は `id` ではなく、`request` / `agent_review` / `user_feedback` /
-  `delta` から作る論理 fingerprint で重複判定する。`_record_id` は呼び出しごとに
-  変わるため、`id` だけで dedupe すると、プロファイル保存失敗後の再実行で同じ
-  feedback が二重 append される。
-- 完了後のプロファイルは `decision_records` の中身を空にして保存し直す。
-- Phase 2(§11)にこの移行コマンドの追加を含める。
+移行後の `learn` / `iterate` はプロファイルへ履歴を再埋め込みしない。
+
+**未実装の拡張:** `load_decision_records(path, limit=...)` による直近 N 件読み込み
+（task_type 優先）は、レコード数が増えた段階で追加する。
 
 ### 3.6 task_type の拡張方法
 
@@ -801,7 +760,7 @@ uv run pyright
 当初の Phase 1〜3 のうち、次は実装済みである。
 
 - engine 抽象化と heuristic ロジックの分離
-- JSONL 履歴の追記・移行と原子的保存（プロファイル埋め込み履歴との二重永続化は残る）
+- JSONL を履歴の唯一の Source of Truth（プロファイル埋め込みを廃止、`migrate-history` で移行）
 - 構造化ルール、候補昇格、矛盾フラグ、rules CLI
 - 日本語／混在テキストの文字 n-gram 照合
 - Gateway V2 inference API を使う LLM レビュー

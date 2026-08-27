@@ -272,9 +272,10 @@ class DecisionAgentTest(unittest.TestCase):
             negative_patterns=("concept definition before user pain",),
         )
 
-        learned = agent.learn(request, review, feedback)
+        learned, record = agent.learn(request, review, feedback)
 
-        self.assertEqual(len(learned.decision_records), 1)
+        self.assertEqual(record.user_feedback.verdict, "revise")
+        self.assertNotIn("decision_records", learned.to_dict())
         self.assertIn("start with a concrete failure case", learned.preference_rules)
         self.assertIn("concept definition before user pain", learned.negative_patterns)
 
@@ -297,7 +298,7 @@ class DecisionAgentTest(unittest.TestCase):
             preference_rules=("start with a concrete failure before the concept",),
         )
 
-        learned = agent.learn(request, review, feedback)
+        learned, _record = agent.learn(request, review, feedback)
 
         self.assertEqual(len(learned.known_mistakes), 1)
         self.assertEqual(learned.known_mistakes[0].pattern, "Problem framing is too weak.")
@@ -318,7 +319,7 @@ class DecisionAgentTest(unittest.TestCase):
             notes="Start with user pain.",
             preference_rules=("start with a concrete failure case",),
         )
-        learned1 = agent.learn(request1, review1, feedback1)
+        learned1, _record = agent.learn(request1, review1, feedback1)
 
         rule_after_first = learned1.preference_rules[0]
         self.assertEqual(rule_after_first.status, "candidate")
@@ -336,7 +337,7 @@ class DecisionAgentTest(unittest.TestCase):
             notes="Start with the user's pain.",
             preference_rules=("start with a concrete failure case example",),
         )
-        learned2 = agent2.learn(request2, review2, feedback2)
+        learned2, _record = agent2.learn(request2, review2, feedback2)
 
         rule_after_second = learned2.preference_rules[0]
         self.assertEqual(rule_after_second.status, "active")
@@ -358,7 +359,7 @@ class DecisionAgentTest(unittest.TestCase):
             notes="n",
             negative_patterns=("abstract concept before concrete pain point",),
         )
-        learned1 = agent.learn(request1, review1, feedback1)
+        learned1, _record = agent.learn(request1, review1, feedback1)
         self.assertEqual(learned1.negative_patterns[0].status, "candidate")
 
         agent2 = DecisionAgent(learned1)
@@ -373,7 +374,7 @@ class DecisionAgentTest(unittest.TestCase):
             notes="n",
             positive_examples=("abstract concept before concrete pain point",),
         )
-        learned2 = agent2.learn(request2, review2, feedback2)
+        learned2, _record = agent2.learn(request2, review2, feedback2)
 
         self.assertEqual(learned2.positive_examples[0].status, "candidate")
         self.assertEqual(len(learned2.positive_examples[0].source_record_ids), 1)
@@ -388,7 +389,7 @@ class DecisionAgentTest(unittest.TestCase):
         )
         review1 = ArtifactReview(verdict="accept", confidence=0.5, summary="s")
         feedback1 = UserFeedback(verdict="revise", notes="needs a concrete pain point up front")
-        learned1 = agent.learn(request1, review1, feedback1)
+        learned1, _record = agent.learn(request1, review1, feedback1)
         self.assertEqual(learned1.known_mistakes[0].status, "candidate")
 
         agent2 = DecisionAgent(learned1)
@@ -397,7 +398,7 @@ class DecisionAgentTest(unittest.TestCase):
         )
         review2 = ArtifactReview(verdict="accept", confidence=0.5, summary="s")
         feedback2 = UserFeedback(verdict="revise", notes="needs a concrete pain point up front")
-        learned2 = agent2.learn(request2, review2, feedback2)
+        learned2, _record = agent2.learn(request2, review2, feedback2)
 
         mistake = learned2.known_mistakes[0]
         self.assertEqual(mistake.status, "active")
@@ -412,7 +413,7 @@ class DecisionAgentTest(unittest.TestCase):
         )
         review1 = ArtifactReview(verdict="accept", confidence=0.5, summary="s")
         feedback1 = UserFeedback(verdict="revise", notes="needs a concrete pain point up front")
-        learned1 = agent.learn(request1, review1, feedback1)
+        learned1, _record = agent.learn(request1, review1, feedback1)
 
         agent2 = DecisionAgent(learned1)
         request2 = ArtifactReviewRequest(
@@ -420,7 +421,7 @@ class DecisionAgentTest(unittest.TestCase):
         )
         review2 = ArtifactReview(verdict="accept", confidence=0.5, summary="s")
         feedback2 = UserFeedback(verdict="reject", notes="needs a concrete pain point up front")
-        learned2 = agent2.learn(request2, review2, feedback2)
+        learned2, _record = agent2.learn(request2, review2, feedback2)
 
         mistake = learned2.known_mistakes[0]
         self.assertEqual(mistake.status, "candidate")
@@ -443,7 +444,7 @@ class DecisionAgentTest(unittest.TestCase):
         request = ArtifactReviewRequest(task_type="blog_outline", intent="write about Decision Agent", artifact="draft")
         review = ArtifactReview(verdict="accept", confidence=0.5, summary="s")
         feedback = UserFeedback(verdict="reject", notes="needs a concrete pain point up front")
-        learned = agent.learn(request, review, feedback)
+        learned, _record = agent.learn(request, review, feedback)
 
         mistake = learned.known_mistakes[0]
         self.assertEqual(mistake.status, "active")
@@ -465,7 +466,7 @@ class DecisionAgentTest(unittest.TestCase):
         feedback = UserFeedback(
             verdict="accept", notes="n", positive_examples=("abstract concept before concrete pain point",)
         )
-        learned = agent.learn(request, review, feedback)
+        learned, _record = agent.learn(request, review, feedback)
 
         positive = learned.positive_examples[0]
         self.assertEqual(positive.status, "candidate")
@@ -483,7 +484,7 @@ class DecisionAgentTest(unittest.TestCase):
         feedback = UserFeedback(
             verdict="accept", notes="n", positive_examples=("abstract concept before concrete pain point",)
         )
-        learned = agent.learn(request, review, feedback)
+        learned, _record = agent.learn(request, review, feedback)
 
         positive = learned.positive_examples[0]
         self.assertEqual(positive.status, "candidate")
@@ -498,9 +499,9 @@ class DecisionAgentTest(unittest.TestCase):
             verdict="revise", notes="n", preference_rules=("start with a concrete failure case",)
         )
 
-        learned = agent.learn(request, low_confidence_review, feedback)
+        learned, record = agent.learn(request, low_confidence_review, feedback)
 
-        self.assertEqual(learned.decision_records[-1].flagged_reason, "low_confidence_disagreement")
+        self.assertEqual(record.flagged_reason, "low_confidence_disagreement")
         # promote-but-annotate: recording/promotion proceeds normally, unblocked
         self.assertEqual(learned.preference_rules[0].text, "start with a concrete failure case")
 
@@ -511,9 +512,9 @@ class DecisionAgentTest(unittest.TestCase):
         confident_review = ArtifactReview(verdict="accept", confidence=0.8, summary="s")
         feedback = UserFeedback(verdict="revise", notes="n")
 
-        learned = agent.learn(request, confident_review, feedback)
+        _, record = agent.learn(request, confident_review, feedback)
 
-        self.assertEqual(learned.decision_records[-1].flagged_reason, "")
+        self.assertEqual(record.flagged_reason, "")
 
     def test_confident_agreement_produces_no_flags(self) -> None:
         active_rule = PreferenceRule.from_value(
@@ -537,9 +538,9 @@ class DecisionAgentTest(unittest.TestCase):
         review = agent.review(request)
         feedback = UserFeedback(verdict=review.verdict, notes="looks good")
 
-        learned = agent.learn(request, review, feedback)
+        learned, record = agent.learn(request, review, feedback)
 
-        self.assertEqual(learned.decision_records[-1].flagged_reason, "")
+        self.assertEqual(record.flagged_reason, "")
         self.assertEqual(learned.preference_rules[0].flagged_reason, "")
         self.assertEqual(learned.negative_patterns[0].flagged_reason, "")
 
@@ -626,9 +627,9 @@ class DecisionAgentTest(unittest.TestCase):
         agent = DecisionAgent(profile)
         review = agent.review(request)
         feedback = UserFeedback(verdict="revise", notes="The concrete pain arrives too late.")
-        learned = agent.learn(request, review, feedback)
+        _, record = agent.learn(request, review, feedback)
 
-        next_review = DecisionAgent(profile).review(request, history_records=learned.decision_records)
+        next_review = DecisionAgent(profile).review(request, history_records=(record,))
 
         self.assertEqual(next_review.verdict, "revise")
         self.assertTrue(any("similar past artifact" in issue.reason for issue in next_review.issues))
@@ -643,13 +644,7 @@ class DecisionAgentTest(unittest.TestCase):
                 "judgment alignment in creative agent workflows."
             ),
         )
-        record = DecisionRecord(
-            request=request,
-            agent_review=ArtifactReview(verdict="revise", confidence=0.5, summary="needs work"),
-            user_feedback=UserFeedback(verdict="revise", notes="The concrete pain arrives too late."),
-            delta="agent verdict matched user feedback",
-        )
-        profile = DecisionProfile(user_id="u1", criteria={}, decision_records=(record,))
+        profile = DecisionProfile(user_id="u1", criteria={})
 
         review = DecisionAgent(profile).review(request, history_records=())
 
@@ -712,7 +707,7 @@ class DecisionAgentTest(unittest.TestCase):
         review = agent.review(request)
         self.assertTrue(any(issue.violated_rule_id == rule.id for issue in review.issues))
 
-        learned = agent.learn(request, review, UserFeedback(verdict="revise", notes="needs work"))
+        learned, _record = agent.learn(request, review, UserFeedback(verdict="revise", notes="needs work"))
 
         updated_rule = next(item for item in learned.preference_rules if item.id == rule.id)
         self.assertEqual(updated_rule.hit_count, 1)
@@ -735,7 +730,7 @@ class DecisionAgentTest(unittest.TestCase):
         agent = DecisionAgent(profile)
         review = agent.review(request)
 
-        learned = agent.learn(request, review, UserFeedback(verdict="accept", notes="actually fine"))
+        learned, _record = agent.learn(request, review, UserFeedback(verdict="accept", notes="actually fine"))
 
         updated_rule = next(item for item in learned.preference_rules if item.id == rule.id)
         self.assertEqual(updated_rule.hit_count, 0)
@@ -798,11 +793,11 @@ class DecisionAgentTest(unittest.TestCase):
         )
         review = DecisionAgent(profile).review(request)
         feedback = UserFeedback(verdict="revise", notes="Needs a sharper opening.")
-        learned = DecisionAgent(profile).learn(request, review, feedback)
+        _, record = DecisionAgent(profile).learn(request, review, feedback)
 
         with TemporaryDirectory() as directory:
             record_path = f"{directory}/blog_outline.jsonl"
-            append_decision_record(record_path, learned.decision_records[-1])
+            append_decision_record(record_path, record)
 
             records = load_decision_records(record_path)
 
@@ -855,10 +850,10 @@ class DecisionAgentTest(unittest.TestCase):
         review = DecisionAgent(profile).review(request)
         feedback = UserFeedback(verdict="revise", notes="Needs a sharper opening.")
 
-        first = DecisionAgent(profile).learn(request, review, feedback)
-        second = DecisionAgent(profile).learn(request, review, feedback)
+        _, first_record = DecisionAgent(profile).learn(request, review, feedback)
+        _, second_record = DecisionAgent(profile).learn(request, review, feedback)
 
-        self.assertNotEqual(first.decision_records[-1].id, second.decision_records[-1].id)
+        self.assertNotEqual(first_record.id, second_record.id)
 
     def test_load_decision_records_skips_malformed_jsonl_rows(self) -> None:
         profile = DecisionProfile(user_id="u1", criteria={})
@@ -869,13 +864,13 @@ class DecisionAgentTest(unittest.TestCase):
         )
         review = DecisionAgent(profile).review(request)
         feedback = UserFeedback(verdict="revise", notes="Needs a sharper opening.")
-        learned = DecisionAgent(profile).learn(request, review, feedback)
+        _, record = DecisionAgent(profile).learn(request, review, feedback)
 
         with TemporaryDirectory() as directory:
             record_path = f"{directory}/blog_outline.jsonl"
             with open(record_path, "w", encoding="utf-8") as file:
                 file.write("{bad json}\n")
-            append_decision_record(record_path, learned.decision_records[-1])
+            append_decision_record(record_path, record)
 
             records = load_decision_records(record_path)
 
@@ -1140,11 +1135,88 @@ class DecisionAgentTest(unittest.TestCase):
 
             records = load_decision_records(records_path)
             with open(profile_path, encoding="utf-8") as file:
-                migrated_profile = DecisionProfile.from_dict(json.load(file))
+                raw = json.load(file)
+            migrated_profile = DecisionProfile.from_dict(raw)
 
-        self.assertEqual(len(records), 1)
-        self.assertEqual(records[0].id, "legacy-record")
-        self.assertEqual(migrated_profile.decision_records, ())
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0].id, "legacy-record")
+            self.assertNotIn("decision_records", migrated_profile.to_dict())
+            self.assertNotIn("decision_records", raw)
+
+            # Subsequent learn must not re-embed history into the profile.
+            request2 = ArtifactReviewRequest(
+                task_type="blog_outline",
+                intent="write about Decision Agent",
+                artifact="Another short outline about Decision Agent.",
+            )
+            review = DecisionAgent(migrated_profile).review(request2)
+            feedback = UserFeedback(verdict="revise", notes="Still needs a sharper opening.")
+            learned, new_record = DecisionAgent(migrated_profile).learn(request2, review, feedback)
+            append_decision_record(records_path, new_record)
+            save_profile(learned, profile_path)
+            with open(profile_path, encoding="utf-8") as file:
+                after_learn = json.load(file)
+            self.assertNotIn("decision_records", after_learn)
+            self.assertEqual(len(load_decision_records(records_path)), 2)
+
+    def test_learn_cli_writes_jsonl_without_embedding_history(self) -> None:
+        with TemporaryDirectory() as directory:
+            profile_path = f"{directory}/profile.json"
+            records_path = f"{directory}/records.jsonl"
+            review_path = f"{directory}/review.json"
+            feedback_path = f"{directory}/feedback.json"
+            output_path = f"{directory}/learned.json"
+            save_profile(DecisionProfile(user_id="u1", criteria={}), profile_path)
+            request_path = f"{directory}/request.json"
+            with open(request_path, "w", encoding="utf-8") as file:
+                json.dump(
+                    {
+                        "task_type": "blog_outline",
+                        "intent": "write about Decision Agent",
+                        "artifact": "A short outline about Decision Agent.",
+                    },
+                    file,
+                )
+            with open(review_path, "w", encoding="utf-8") as file:
+                json.dump({"verdict": "revise", "confidence": 0.5, "summary": "needs work"}, file)
+            with open(feedback_path, "w", encoding="utf-8") as file:
+                json.dump({"verdict": "revise", "notes": "Needs a sharper opening."}, file)
+
+            self.assertEqual(
+                cli_main(
+                    [
+                        "learn",
+                        profile_path,
+                        request_path,
+                        review_path,
+                        feedback_path,
+                        "--records",
+                        records_path,
+                        "--output",
+                        output_path,
+                    ]
+                ),
+                0,
+            )
+
+            with open(output_path, encoding="utf-8") as file:
+                saved = json.load(file)
+            self.assertNotIn("decision_records", saved)
+            self.assertEqual(len(load_decision_records(records_path)), 1)
+
+    def test_review_without_records_uses_empty_history(self) -> None:
+        request = ArtifactReviewRequest(
+            task_type="blog_outline",
+            intent="write about Decision Agent",
+            artifact=(
+                "A detailed outline about Decision Agent. It explains the concept, profile, "
+                "feedback, and loop mechanics before showing why the reader should care about "
+                "judgment alignment in creative agent workflows."
+            ),
+        )
+        # Without history, this artifact should accept under an empty profile.
+        review = DecisionAgent(DecisionProfile(user_id="u1", criteria={})).review(request)
+        self.assertEqual(review.verdict, "accept")
 
 
 class FakeGateway:

@@ -737,7 +737,8 @@ Do not publish the Skill until:
 - schema conformance tests cover every request, success, error, exit code,
   unknown field, required field, and command-specific result in the JSON
   contract;
-- JSONL/profile dual history persistence is resolved;
+- JSONL/profile dual history persistence is resolved (JSONL is the sole SoT;
+  see `migrate-history` for legacy embedded rows);
 - concurrent mutation and retry tests pass;
 - timed-out mutation retries deduplicate by `operation_id`, payload conflicts
   fail closed before forgetting, and any reuse of a forgotten operation identity

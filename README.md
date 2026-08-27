@@ -191,11 +191,9 @@ PYTHONPATH=src python -m decision_agent.cli migrate-history \
 ```
 
 The migration path reads raw `decision_records` from profile JSON, appends them
-to JSONL, and saves that profile with an empty embedded history. JSONL appends
-skip duplicate logical records so reruns are safe. The current profile model
-still supports and serializes embedded history, so a later `learn` or `iterate`
-can add new records to the profile again; JSONL is not yet the sole source of
-truth.
+to JSONL (skipping duplicate logical records), and re-saves the profile without
+embedded history. JSONL is the sole source of truth for decision records;
+subsequent `learn` / `iterate` calls append only to `--records`.
 
 Review with past records:
 
