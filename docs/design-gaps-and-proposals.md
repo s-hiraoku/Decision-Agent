@@ -102,44 +102,23 @@ class TextMatcher(Protocol):
 
 ---
 
-## 2. 決定履歴の Source of Truth が二重（P0）
+## 2. 決定履歴の Source of Truth が二重（P0） — **解消済み**
 
-### 現状
+### 現状（解消後）
 
-`DecisionRecord` が 2 箇所に保存される。
+JSONL（`--records`）が履歴の唯一の Source of Truth。
+`DecisionProfile` は `decision_records` を持たず、`from_dict` は旧フィールドを無視する。
+`learn` は `(DecisionProfile, DecisionRecord)` を返し、CLI は JSONL 追記のあと
+プロファイルを保存する。`review` / `evaluate` は明示の `history_records`（省略時は空）のみを使う。
 
-- `DecisionProfile.decision_records`（プロファイル JSON 内）
-- `--records` で指定する JSONL ファイル
+旧埋め込み履歴は `migrate-history` で JSONL へ移す（論理 fingerprint で重複抑止）。
 
-`learn` はレコードをプロファイルに**も**追加して `save_profile` で書き出すため、
-反復するたびにプロファイル JSON が全履歴を抱えて肥大化する。一方 `review` は
-`--records` 指定時にプロファイル内レコードを**無視**する（`history_records` が
-非 None なら差し替え）ため、どちらが正かが実行パスで変わる。
+### 残課題
 
-仕様書は「プロファイルは現在の判断サマリ、JSONL が生の証拠」と明言しており、
-実装がそれに反している。
+- `load_decision_records(path, limit=...)` による直近 N 件読み込みは未実装
+  （レコード数が増えた段階で追加）
 
-### 設計方針
-
-**JSONL を唯一の履歴 Source of Truth とし、プロファイルから履歴を外す。**
-
-- `DecisionProfile.decision_records` を廃止（読み込み時は後方互換で無視・警告）
-- `learn` は「更新済みプロファイル」と「新規 `DecisionRecord`」を**別々に返す**
-  ```python
-  def learn(...) -> tuple[DecisionProfile, DecisionRecord]: ...
-  ```
-  現行の「プロファイル末尾のレコードを取り出して JSONL に書く」という CLI 側の
-  暗黙の結合（`learned.decision_records[-1]`）を解消する
-- `review` / `evaluate` の履歴は常に明示引数 `history_records` で渡す。
-  プロファイル内フォールバックを廃止し、「履歴なし = 空」と単純化する
-- レコード数が増えたときの読み込み上限（例: 直近 N 件 + task_type 一致優先）を
-  `load_decision_records(path, limit=...)` として storage 層に持たせる
-
-### 移行
-
-- 旧形式プロファイル（`decision_records` 入り）を読んだ場合:
-  1 回だけ「`decision-agent migrate <profile> --records <jsonl>`」で JSONL へ
-  吐き出すコマンドを提供し、以後プロファイルには書かない。
+移行コマンド名は `migrate-history`（実装済み）。
 
 ---
 

@@ -122,10 +122,9 @@ class DecisionAgent:
     def review(
         self,
         request: ArtifactReviewRequest,
-        history_records: tuple[DecisionRecord, ...] | None = None,
+        history_records: tuple[DecisionRecord, ...] = (),
     ) -> ArtifactReview:
-        records = self.profile.decision_records if history_records is None else history_records
-        review = self.review_engine.review(request, self.profile, records)
+        review = self.review_engine.review(request, self.profile, history_records)
         if review.verdict not in SUPPORTED_VERDICTS:
             raise ValueError(f"unsupported verdict: {review.verdict}")
         engine_name = review.engine or getattr(self.review_engine, "name", "")
@@ -136,7 +135,7 @@ class DecisionAgent:
         request: ArtifactReviewRequest,
         agent_review: ArtifactReview,
         user_feedback: UserFeedback,
-    ) -> DecisionProfile:
+    ) -> tuple[DecisionProfile, DecisionRecord]:
         delta = _feedback_delta(agent_review, user_feedback)
         record_id = _record_id(request)
         record = DecisionRecord(
@@ -172,7 +171,7 @@ class DecisionAgent:
         preference_rules = _apply_rule_usage(preference_rules, agent_review, user_feedback, record.created_at)
         negative_patterns = _apply_rule_usage(negative_patterns, agent_review, user_feedback, record.created_at)
 
-        return replace(
+        learned = replace(
             self.profile,
             preference_rules=preference_rules,
             negative_patterns=negative_patterns,
@@ -183,19 +182,18 @@ class DecisionAgent:
                 user_feedback,
                 record_id=record_id,
             ),
-            decision_records=(*self.profile.decision_records, record),
         )
+        return learned, record
 
     def evaluate(
         self,
         cases: tuple[EvaluationCase, ...],
-        history_records: tuple[DecisionRecord, ...] | None = None,
+        history_records: tuple[DecisionRecord, ...] = (),
     ) -> EvaluationReport:
-        records = self.profile.decision_records if history_records is None else history_records
         results: list[EvaluationCaseResult] = []
 
         for index, case in enumerate(cases, start=1):
-            review = self.review(case.request, history_records=records)
+            review = self.review(case.request, history_records=history_records)
             judgment = case.user_judgment
             agreement = self.agreement_judge.judge(judgment, review)
             missed_core_issues = tuple(result.issue for result in agreement.core_issues if not result.noticed)

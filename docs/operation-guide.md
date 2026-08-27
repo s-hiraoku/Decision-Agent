@@ -35,12 +35,10 @@ cases/
 - `records/*.jsonl` is append-only operational history.
 - `cases/*.jsonl` is a fixed evaluation set used to measure improvement.
 
-The current implementation has dual history persistence: `learn` / `iterate`
-append the new record to `DecisionProfile.decision_records`, and `--records`
-also writes JSONL. Commands prefer an explicitly supplied `--records` file for
-review/evaluation history; without it they can fall back to embedded profile
-history. Treat JSONL as the recommended operational log, but not yet as the
-only source of truth.
+Decision history lives only in append-only JSONL (`--records`). Profiles store
+the editable judgment summary (rules, patterns, known mistakes) and do **not**
+embed `decision_records`. `review` / `evaluate` / `iterate` use history from
+`--records` when provided; omitting it means empty history.
 
 Profile rules are stored as structured objects with stable IDs. Legacy profiles
 that still use plain strings are accepted on read and are written back as
@@ -51,7 +49,7 @@ Cases are the test set.
 Malformed evaluation case rows fail fast because a truncated test set would make
 accuracy numbers misleading.
 
-If an old profile contains embedded `decision_records`, migrate them once:
+If an old profile still contains embedded `decision_records`, migrate them once:
 
 ```bash
 PYTHONPATH=src python -m decision_agent.cli migrate-history \
@@ -60,10 +58,9 @@ PYTHONPATH=src python -m decision_agent.cli migrate-history \
 ```
 
 The command reads the legacy embedded rows directly from the old JSON, appends
-them to JSONL, and saves the profile with its current embedded history emptied.
-Re-running the command is safe because JSONL appends skip duplicate logical
-records. A subsequent `learn` or `iterate` can embed new records again until
-the planned JSONL-only migration is implemented.
+them to JSONL (skipping duplicate logical records), and re-saves the profile
+without a `decision_records` field. Later `learn` / `iterate` calls append only
+to JSONL and never re-embed history into the profile.
 
 ## 1. Review An Artifact
 

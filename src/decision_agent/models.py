@@ -247,7 +247,6 @@ class DecisionProfile:
     negative_patterns: tuple[PatternEntry, ...] = ()
     positive_examples: tuple[PatternEntry, ...] = ()
     known_mistakes: tuple["KnownMistake", ...] = ()
-    decision_records: tuple["DecisionRecord", ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -284,9 +283,7 @@ class DecisionProfile:
                 for item in _get_list(data, "positive_examples")
             ),
             known_mistakes=tuple(KnownMistake.from_dict(item) for item in _get_dict_list(data, "known_mistakes")),
-            decision_records=tuple(
-                DecisionRecord.from_dict(item) for item in _get_dict_list(data, "decision_records")
-            ),
+            # Legacy embedded decision_records are ignored; JSONL is the sole history SoT.
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -299,7 +296,6 @@ class DecisionProfile:
             "negative_patterns": [item.to_dict() for item in self.negative_patterns],
             "positive_examples": [item.to_dict() for item in self.positive_examples],
             "known_mistakes": [item.to_dict() for item in self.known_mistakes],
-            "decision_records": [item.to_dict() for item in self.decision_records],
         }
 
 
