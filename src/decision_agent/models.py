@@ -564,6 +564,83 @@ class EvaluationCaseResult:
 
 
 @dataclass(frozen=True)
+class EvaluationDelta:
+    verdict_accuracy: float
+    core_issue_accuracy: float | None
+    revision_direction_accuracy: float | None
+
+    @classmethod
+    def from_runs(
+        cls,
+        *,
+        verdict_accuracy: float,
+        previous_verdict_accuracy: float,
+        core_issue_accuracy: float | None,
+        previous_core_issue_accuracy: float | None,
+        revision_direction_accuracy: float | None,
+        previous_revision_direction_accuracy: float | None,
+    ) -> "EvaluationDelta":
+        return cls(
+            verdict_accuracy=verdict_accuracy - previous_verdict_accuracy,
+            core_issue_accuracy=_optional_accuracy_delta(core_issue_accuracy, previous_core_issue_accuracy),
+            revision_direction_accuracy=_optional_accuracy_delta(
+                revision_direction_accuracy,
+                previous_revision_direction_accuracy,
+            ),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "verdict_accuracy": self.verdict_accuracy,
+            "core_issue_accuracy": self.core_issue_accuracy,
+            "revision_direction_accuracy": self.revision_direction_accuracy,
+        }
+
+
+@dataclass(frozen=True)
+class EvaluationRun:
+    run_at: str
+    engine: str
+    profile_fingerprint: str
+    cases_fingerprint: str
+    cases: int
+    verdict_accuracy: float
+    core_issue_accuracy: float | None
+    revision_direction_accuracy: float | None
+    profile_path: str = ""
+    cases_path: str = ""
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "EvaluationRun":
+        return cls(
+            run_at=str(_get(data, "run_at", "")),
+            engine=str(data["engine"]),
+            profile_fingerprint=str(_get(data, "profile_fingerprint", "")),
+            cases_fingerprint=str(_get(data, "cases_fingerprint", "")),
+            cases=int(data.get("cases", 0)),
+            verdict_accuracy=float(data["verdict_accuracy"]),
+            core_issue_accuracy=_optional_float(data.get("core_issue_accuracy")),
+            revision_direction_accuracy=_optional_float(data.get("revision_direction_accuracy")),
+            profile_path=str(_get(data, "profile_path", "")),
+            cases_path=str(_get(data, "cases_path", "")),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "run_at": self.run_at,
+            "engine": self.engine,
+            "profile_path": self.profile_path,
+            "profile_fingerprint": self.profile_fingerprint,
+            "cases_path": self.cases_path,
+            "cases_fingerprint": self.cases_fingerprint,
+            "cases": self.cases,
+            "verdict_accuracy": self.verdict_accuracy,
+            "core_issue_accuracy": self.core_issue_accuracy,
+            "revision_direction_accuracy": self.revision_direction_accuracy,
+        }
+
+
+@dataclass(frozen=True)
 class EvaluationReport:
     cases: int
     verdict_accuracy: float
@@ -572,6 +649,7 @@ class EvaluationReport:
     common_misses: tuple[str, ...] = ()
     suggested_profile_updates: tuple[str, ...] = ()
     case_results: tuple[EvaluationCaseResult, ...] = ()
+    delta_vs_previous: EvaluationDelta | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -582,7 +660,20 @@ class EvaluationReport:
             "common_misses": list(self.common_misses),
             "suggested_profile_updates": list(self.suggested_profile_updates),
             "case_results": [item.to_dict() for item in self.case_results],
+            "delta_vs_previous": None if self.delta_vs_previous is None else self.delta_vs_previous.to_dict(),
         }
+
+
+def _optional_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    return float(value)
+
+
+def _optional_accuracy_delta(current: float | None, previous: float | None) -> float | None:
+    if current is None or previous is None:
+        return None
+    return current - previous
 
 
 def _string_tuple(value: Any, *, field_name: str) -> tuple[str, ...]:

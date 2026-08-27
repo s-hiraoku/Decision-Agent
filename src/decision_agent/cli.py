@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import replace
+from datetime import UTC, datetime
 import json
 import os
 from pathlib import Path
@@ -12,17 +13,31 @@ from decision_agent.agent import FLAG_CONTRADICTS_ESTABLISHED_RULE, RECURRENCE_T
 from decision_agent.engines import ReviewEngine
 from decision_agent.engines.heuristic import HeuristicAgreementJudge, HeuristicReviewEngine
 from decision_agent.engines.llm import LLMEngineError, LLMReviewEngine
-from decision_agent.models import DecisionProfile, DecisionRecord, KnownMistake, PatternEntry, PreferenceRule
+from decision_agent.models import (
+    DecisionProfile,
+    DecisionRecord,
+    EvaluationDelta,
+    EvaluationReport,
+    EvaluationRun,
+    KnownMistake,
+    PatternEntry,
+    PreferenceRule,
+)
 from decision_agent.storage import (
     append_decision_record,
+    append_evaluation_run,
+    canonical_fingerprint,
+    file_fingerprint,
     load_decision_records,
     load_evaluation_cases,
+    load_evaluation_runs,
     load_feedback,
     load_legacy_profile_decision_records,
     load_profile,
     load_request,
     load_review,
     load_review_request,
+    previous_evaluation_run,
     save_profile,
 )
 
@@ -78,6 +93,16 @@ def _main(argv: list[str] | None = None) -> int:
     evaluate_parser.add_argument("profile", type=Path)
     evaluate_parser.add_argument("cases", type=Path)
     evaluate_parser.add_argument("--records", type=Path, help="Read past decision records from JSONL.")
+    evaluate_parser.add_argument(
+        "--history",
+        type=Path,
+        help="Append this evaluation run to JSONL and compare against the previous matching run.",
+    )
+    evaluate_parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Fail if any evaluation case is missing a stable id.",
+    )
     _add_engine_arguments(evaluate_parser)
 
     rules_parser = subcommands.add_parser("rules", help="List or update profile rules.")
@@ -179,8 +204,16 @@ def _main(argv: list[str] | None = None) -> int:
         cases = load_evaluation_cases(args.cases)
         if not cases:
             parser.error(f"no valid evaluation cases found in: {args.cases}")
+        missing_ids = [index for index, case in enumerate(cases, start=1) if not case.id]
+        for index in missing_ids:
+            print(f"warning: evaluation case {index} is missing id", file=sys.stderr)
+        if missing_ids and args.strict:
+            parser.error("evaluation cases are missing id; refusing --strict")
         records = load_decision_records(args.records) if args.records else ()
-        report = _agent(profile, args, parser).evaluate(cases, history_records=records)
+        agent = _agent(profile, args, parser)
+        report = agent.evaluate(cases, history_records=records)
+        if args.history:
+            report = _persist_evaluation_run(report, profile, args, agent.review_engine.name)
         print(json.dumps(report.to_dict(), indent=2, ensure_ascii=False))
         return 0
 
@@ -224,6 +257,48 @@ def _main(argv: list[str] | None = None) -> int:
 
     parser.error(f"unknown command: {args.command}")
     return 2
+
+
+def _persist_evaluation_run(
+    report: EvaluationReport,
+    profile: DecisionProfile,
+    args: argparse.Namespace,
+    engine: str,
+) -> EvaluationReport:
+    cases_fingerprint = file_fingerprint(args.cases)
+    previous = previous_evaluation_run(
+        load_evaluation_runs(args.history),
+        cases_fingerprint=cases_fingerprint,
+        engine=engine,
+    )
+    delta = None if previous is None else _evaluation_delta(report, previous)
+    append_evaluation_run(
+        args.history,
+        EvaluationRun(
+            run_at=datetime.now(UTC).isoformat(),
+            engine=engine,
+            profile_fingerprint=canonical_fingerprint(profile.to_dict()),
+            cases_fingerprint=cases_fingerprint,
+            cases=report.cases,
+            verdict_accuracy=report.verdict_accuracy,
+            core_issue_accuracy=report.core_issue_accuracy,
+            revision_direction_accuracy=report.revision_direction_accuracy,
+            profile_path=str(args.profile),
+            cases_path=str(args.cases),
+        ),
+    )
+    return replace(report, delta_vs_previous=delta)
+
+
+def _evaluation_delta(report: EvaluationReport, previous: EvaluationRun) -> EvaluationDelta:
+    return EvaluationDelta.from_runs(
+        verdict_accuracy=report.verdict_accuracy,
+        previous_verdict_accuracy=previous.verdict_accuracy,
+        core_issue_accuracy=report.core_issue_accuracy,
+        previous_core_issue_accuracy=previous.core_issue_accuracy,
+        revision_direction_accuracy=report.revision_direction_accuracy,
+        previous_revision_direction_accuracy=previous.revision_direction_accuracy,
+    )
 
 
 def _add_engine_arguments(command_parser: argparse.ArgumentParser) -> None:

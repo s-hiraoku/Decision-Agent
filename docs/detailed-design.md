@@ -607,6 +607,13 @@ Phase 2 着手前に行うのが最小コストになる
 
 ### 7.6 評価の時系列トラッキング
 
+**実装済み:** `evaluate --history` が実行結果を append-only JSONL に追記し、
+同一 `cases_fingerprint` かつ同一 `engine` の直近 run との差分を
+`delta_vs_previous` としてレポートする。`rendering.py` は導入せず、
+プロファイル指紋は `to_dict()` の決定的 JSON、ケース指紋はファイル内容の
+SHA-256 とする。エンジン名は `heuristic` / `llm` であり、Gateway 側モデル名は
+含めない(`--model` は導入しない)。
+
 **現状の問題:** 仕様書の成功基準は「反復によりエージェントの判断がユーザーの
 判断に近づくこと」だが、`evaluate` は実行のたびにレポートを stdout へ出すだけで、
 過去の実行結果を保存・比較する手段がない。運用ガイドは「5〜10 ケース追加ごとに
@@ -643,8 +650,10 @@ class EvaluationRun:
   `cases_fingerprint` が一致する run だけを時系列として扱う。
   同様に `profile_fingerprint` は「同じプロファイルに対して heuristic /
   llm 両エンジンで評価した」ケースを区別するために使う(§7.3 の注意と整合)。
-  フィンガープリントの算出は §5.4 の `rendering.py` の決定的シリアライズを再利用し、
-  プロファイルの読み込み順序やキー順に依存しないようにする。
+  フィンガープリントの算出は `storage.canonical_fingerprint`(プロファイルの
+  決定的 JSON)と `storage.file_fingerprint`(cases ファイルの生バイト)を使う。
+  キー順に依存しない。`profile_fingerprint` は記録するが、前回比の照合キーには
+  使わない(固定ケース集合上でのプロファイル更新を測るため)。
 - **レポートへの反映:** `evaluate` の標準出力に `delta_vs_previous` を追加する。
   `--history` で指定したファイルから同一 `cases_fingerprint` かつ同一 `engine` の
   直近 run を探し、`verdict_accuracy` 等の差分を表示する。該当する過去 run が
@@ -698,6 +707,7 @@ learn    <profile> <request> <review> <feedback> --output F
 iterate  <profile> <request> --feedback F --records F --output F
          [--engine {heuristic,llm}]
 evaluate <profile> <cases> [--records F] [--engine {heuristic,llm}]
+         [--history F] [--strict]
 rules list <profile> [--status {active,candidate,retired}] [--json]
 rules {approve,reject,retire} <profile> <rule-id> [--output F]
 migrate-history <old-profile> --records F [--output F]
@@ -710,6 +720,11 @@ decide / train   # 既存のまま(凍結)
   `--engine` は値の検証にのみ使う。
 - `evaluate --engine llm` はケースのレビュー生成に LLM を使うが、
   一致判定は現在も heuristic `AgreementJudge` を使う。
+- `evaluate --history` は実行結果を append-only JSONL に追記し、同一
+  `cases_fingerprint` かつ同一 `engine` の直近 run との `delta_vs_previous` を
+  レポートする。該当する過去 run がなければ `null`。
+- `evaluate --strict` はケース `id` 欠落をエラーにする。未指定時は警告して
+  `case-{index}` にフォールバックする。
 - `rules approve/reject/retire` で `--output` 省略時は入力プロファイルを上書きする
   (この 3 コマンドは編集が目的なので in-place を既定とする)。
 - `migrate-history` は §3.5 の一回限りの移行コマンド。旧プロファイル内の
@@ -724,8 +739,8 @@ decide / train   # 既存のまま(凍結)
 
 ### 9.2 未実装の設計案
 
-`--model`、`--verbose`、`--propose-rules`、`evaluate --history`、
-`--apply-stats`、`--strict` は現行 CLI に存在しない。モデル選択は Gateway 側の
+`--model`、`--verbose`、`--propose-rules`、
+`--apply-stats` は現行 CLI に存在しない。モデル選択は Gateway 側の
 ポリシーに移管したため `--model` は追加しない。その他は対応する機能を実装する
 場合に、改めて CLI 契約を確定する。
 
@@ -736,7 +751,7 @@ decide / train   # 既存のまま(凍結)
 1. heuristic レビューの決定性、日本語／混在テキストの文字 n-gram 照合、
    関連履歴の選別。
 2. JSONL 履歴の追記と重複抑止、旧プロファイル履歴の移行、不正な評価ケースの
-   fail-fast。
+   fail-fast、`evaluate --history` の追記と同一ケース／エンジンに対する差分。
 3. candidate の反復昇格、active ルールとの矛盾、approve/reject/retire、
    hit/miss と disagreement flag。
 4. `learn` / `iterate` の非対話性、原子的なプロファイル保存、旧形式データの
@@ -764,19 +779,19 @@ uv run pyright
 - 構造化ルール、候補昇格、矛盾フラグ、rules CLI
 - 日本語／混在テキストの文字 n-gram 照合
 - Gateway V2 inference API を使う LLM レビュー
+- 評価履歴(`evaluate --history`)と同一ケース集合・同一エンジンに対する時系列差分
 
 当初案から変更した点:
 
 - LLM は Anthropic SDK 直接呼び出しではなく local-agent-gateway に委譲した。
 - `[llm]` extra、`prompts.py`、`rendering.py`、`--model` は導入していない。
-- 評価履歴、LLM AgreementJudge、自由記述からの LLM ルール抽出は未実装。
+- LLM AgreementJudge、自由記述からの LLM ルール抽出は未実装。
 
 次の実装単位は、実データで優先度を確認してから独立に進める。
 
 1. 自由記述フィードバックからの candidate ルール提案。
 2. semantic AgreementJudge と、heuristic 評価との指標分離。
-3. 評価履歴と同一ケース集合に対する時系列差分。
-4. 生成エージェントとの revise-loop オーケストレーション。
+3. 生成エージェントとの revise-loop オーケストレーション。
 
 ### 見送り(将来課題として明記)
 

@@ -14,6 +14,7 @@ from decision_agent.models import (
     DecisionProfile,
     DecisionRecord,
     EvaluationCase,
+    EvaluationRun,
     UserFeedback,
 )
 
@@ -78,6 +79,51 @@ def load_evaluation_cases(path: str | Path) -> tuple[EvaluationCase, ...]:
     return tuple(cases)
 
 
+def load_evaluation_runs(path: str | Path) -> tuple[EvaluationRun, ...]:
+    history_path = Path(path)
+    if not history_path.exists():
+        return ()
+
+    runs: list[EvaluationRun] = []
+    with history_path.open("r", encoding="utf-8") as file:
+        for line in file:
+            if line.strip():
+                try:
+                    runs.append(EvaluationRun.from_dict(json.loads(line)))
+                except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                    continue
+    return tuple(runs)
+
+
+def append_evaluation_run(path: str | Path, run: EvaluationRun) -> None:
+    history_path = Path(path)
+    history_path.parent.mkdir(parents=True, exist_ok=True)
+    with history_path.open("a", encoding="utf-8") as file:
+        json.dump(run.to_dict(), file, ensure_ascii=False)
+        file.write("\n")
+
+
+def previous_evaluation_run(
+    runs: tuple[EvaluationRun, ...],
+    *,
+    cases_fingerprint: str,
+    engine: str,
+) -> EvaluationRun | None:
+    for run in reversed(runs):
+        if run.cases_fingerprint == cases_fingerprint and run.engine == engine:
+            return run
+    return None
+
+
+def canonical_fingerprint(data: dict[str, Any]) -> str:
+    payload = json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return _sha256_fingerprint(payload.encode("utf-8"))
+
+
+def file_fingerprint(path: str | Path) -> str:
+    return _sha256_fingerprint(Path(path).read_bytes())
+
+
 def append_decision_record(path: str | Path, record: DecisionRecord) -> None:
     record_path = Path(path)
     record_path.parent.mkdir(parents=True, exist_ok=True)
@@ -115,6 +161,10 @@ def _save_json(data: dict[str, Any], path: str | Path) -> None:
     finally:
         if temp_name and Path(temp_name).exists():
             Path(temp_name).unlink()
+
+
+def _sha256_fingerprint(payload: bytes) -> str:
+    return "sha256:" + sha256(payload).hexdigest()
 
 
 def _record_fingerprint(record: DecisionRecord) -> str:

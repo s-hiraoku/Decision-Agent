@@ -40,6 +40,7 @@ Recommended local layout:
 profiles/default.json
 records/blog_outline.jsonl
 cases/blog_outline_cases.jsonl
+evals/blog_outline_evals.jsonl
 ```
 
 Review an artifact:
@@ -234,7 +235,8 @@ Evaluate whether the agent is getting closer to the user's judgment:
 PYTHONPATH=src python -m decision_agent.cli evaluate \
   examples/review-profile.json \
   examples/blog-outline-cases.jsonl \
-  --records /tmp/decision-agent-records/blog_outline.jsonl
+  --records /tmp/decision-agent-records/blog_outline.jsonl \
+  --history /tmp/decision-agent-evals/blog_outline.jsonl
 ```
 
 The review path is intentionally simple for now: it checks the artifact against
