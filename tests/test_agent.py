@@ -1,6 +1,7 @@
 import json
 import unittest
 import urllib.error
+from pathlib import Path
 from typing import Any
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
@@ -19,13 +20,22 @@ from decision_agent.models import (
     DecisionProfile,
     DecisionRecord,
     EvaluationCase,
+    EvaluationRun,
     KnownMistake,
     PatternEntry,
     PreferenceRule,
     ReviewIssue,
     UserFeedback,
 )
-from decision_agent.storage import append_decision_record, load_decision_records, load_evaluation_cases, save_profile
+from decision_agent.storage import (
+    append_decision_record,
+    append_evaluation_run,
+    file_fingerprint,
+    load_decision_records,
+    load_evaluation_cases,
+    load_evaluation_runs,
+    save_profile,
+)
 
 
 class DecisionAgentTest(unittest.TestCase):
@@ -916,6 +926,7 @@ class DecisionAgentTest(unittest.TestCase):
 
         self.assertEqual(report.cases, 2)
         self.assertEqual(report.verdict_accuracy, 0.5)
+        self.assertIsNone(report.delta_vs_previous)
         self.assertIn("problem framing is weak", report.common_misses)
         concept_first_result = next(result for result in report.case_results if result.id == "concept-first")
         self.assertFalse(concept_first_result.verdict_agreement)
@@ -963,6 +974,163 @@ class DecisionAgentTest(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "malformed evaluation case row 2"):
                 load_evaluation_cases(case_path)
+
+    def test_evaluate_cli_appends_history_and_reports_delta(self) -> None:
+        with TemporaryDirectory() as directory:
+            profile_path, cases_path, history_path = _write_evaluate_fixture(directory)
+            append_evaluation_run(
+                history_path,
+                EvaluationRun(
+                    run_at="2026-01-01T00:00:00+00:00",
+                    engine="heuristic",
+                    profile_fingerprint="sha256:previous-profile",
+                    cases_fingerprint=file_fingerprint(cases_path),
+                    cases=1,
+                    verdict_accuracy=0.0,
+                    core_issue_accuracy=0.0,
+                    revision_direction_accuracy=0.0,
+                ),
+            )
+
+            stdout = StringIO()
+            with redirect_stdout(stdout):
+                exit_code = cli_main(
+                    ["evaluate", profile_path, cases_path, "--history", history_path, "--engine", "heuristic"]
+                )
+
+            self.assertEqual(exit_code, 0)
+            report = json.loads(stdout.getvalue())
+            self.assertEqual(report["verdict_accuracy"], 1.0)
+            self.assertEqual(report["delta_vs_previous"]["verdict_accuracy"], 1.0)
+            self.assertEqual(report["delta_vs_previous"]["core_issue_accuracy"], report["core_issue_accuracy"])
+            self.assertEqual(
+                report["delta_vs_previous"]["revision_direction_accuracy"],
+                report["revision_direction_accuracy"],
+            )
+
+            runs = load_evaluation_runs(history_path)
+            self.assertEqual(len(runs), 2)
+            self.assertEqual(runs[-1].engine, "heuristic")
+            self.assertEqual(runs[-1].cases_fingerprint, file_fingerprint(cases_path))
+            self.assertTrue(runs[-1].profile_fingerprint.startswith("sha256:"))
+
+    def test_evaluate_cli_second_identical_run_reports_zero_delta(self) -> None:
+        with TemporaryDirectory() as directory:
+            profile_path, cases_path, history_path = _write_evaluate_fixture(directory)
+
+            with redirect_stdout(StringIO()):
+                self.assertEqual(cli_main(["evaluate", profile_path, cases_path, "--history", history_path]), 0)
+
+            stdout = StringIO()
+            with redirect_stdout(stdout):
+                exit_code = cli_main(["evaluate", profile_path, cases_path, "--history", history_path])
+
+            self.assertEqual(exit_code, 0)
+            report = json.loads(stdout.getvalue())
+            self.assertEqual(report["delta_vs_previous"]["verdict_accuracy"], 0.0)
+            self.assertEqual(len(load_evaluation_runs(history_path)), 2)
+
+    def test_evaluate_cli_omits_delta_when_cases_fingerprint_differs(self) -> None:
+        with TemporaryDirectory() as directory:
+            profile_path, cases_path, history_path = _write_evaluate_fixture(directory)
+            append_evaluation_run(
+                history_path,
+                EvaluationRun(
+                    run_at="2026-01-01T00:00:00+00:00",
+                    engine="heuristic",
+                    profile_fingerprint="sha256:previous-profile",
+                    cases_fingerprint="sha256:different-cases",
+                    cases=1,
+                    verdict_accuracy=0.0,
+                    core_issue_accuracy=0.0,
+                    revision_direction_accuracy=0.0,
+                ),
+            )
+
+            stdout = StringIO()
+            with redirect_stdout(stdout):
+                exit_code = cli_main(["evaluate", profile_path, cases_path, "--history", history_path])
+
+            self.assertEqual(exit_code, 0)
+            report = json.loads(stdout.getvalue())
+            self.assertIsNone(report["delta_vs_previous"])
+            self.assertEqual(len(load_evaluation_runs(history_path)), 2)
+
+    def test_evaluate_cli_omits_delta_when_engine_differs(self) -> None:
+        with TemporaryDirectory() as directory:
+            profile_path, cases_path, history_path = _write_evaluate_fixture(directory)
+            append_evaluation_run(
+                history_path,
+                EvaluationRun(
+                    run_at="2026-01-01T00:00:00+00:00",
+                    engine="llm",
+                    profile_fingerprint="sha256:previous-profile",
+                    cases_fingerprint=file_fingerprint(cases_path),
+                    cases=1,
+                    verdict_accuracy=0.0,
+                    core_issue_accuracy=0.0,
+                    revision_direction_accuracy=0.0,
+                ),
+            )
+
+            stdout = StringIO()
+            with redirect_stdout(stdout):
+                exit_code = cli_main(["evaluate", profile_path, cases_path, "--history", history_path])
+
+            self.assertEqual(exit_code, 0)
+            report = json.loads(stdout.getvalue())
+            self.assertIsNone(report["delta_vs_previous"])
+
+    def test_evaluate_cli_warns_on_missing_case_id(self) -> None:
+        with TemporaryDirectory() as directory:
+            profile_path, cases_path, history_path = _write_evaluate_fixture(directory, case_id="")
+
+            stdout = StringIO()
+            stderr = StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = cli_main(["evaluate", profile_path, cases_path, "--history", history_path])
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("warning: evaluation case 1 is missing id", stderr.getvalue())
+            self.assertEqual(json.loads(stdout.getvalue())["case_results"][0]["id"], "case-1")
+            self.assertEqual(len(load_evaluation_runs(history_path)), 1)
+
+    def test_evaluate_cli_strict_rejects_missing_case_id(self) -> None:
+        with TemporaryDirectory() as directory:
+            profile_path, cases_path, history_path = _write_evaluate_fixture(directory, case_id="")
+
+            stderr = StringIO()
+            with self.assertRaises(SystemExit) as raised, redirect_stderr(stderr):
+                cli_main(["evaluate", profile_path, cases_path, "--history", history_path, "--strict"])
+
+            self.assertEqual(raised.exception.code, 2)
+            self.assertIn("evaluation cases are missing id", stderr.getvalue())
+            self.assertFalse(Path(history_path).exists())
+
+    def test_load_evaluation_runs_skips_malformed_jsonl_rows(self) -> None:
+        with TemporaryDirectory() as directory:
+            history_path = f"{directory}/evals.jsonl"
+            with open(history_path, "w", encoding="utf-8") as file:
+                file.write("{bad json}\n")
+            append_evaluation_run(
+                history_path,
+                EvaluationRun(
+                    run_at="2026-01-01T00:00:00+00:00",
+                    engine="heuristic",
+                    profile_fingerprint="sha256:profile",
+                    cases_fingerprint="sha256:cases",
+                    cases=1,
+                    verdict_accuracy=0.5,
+                    core_issue_accuracy=None,
+                    revision_direction_accuracy=None,
+                ),
+            )
+
+            runs = load_evaluation_runs(history_path)
+
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(runs[0].verdict_accuracy, 0.5)
+        self.assertIsNone(runs[0].core_issue_accuracy)
 
     def test_user_feedback_accepts_scalar_core_issue(self) -> None:
         feedback = UserFeedback.from_dict(
@@ -1480,6 +1648,31 @@ class LLMReviewEngineTest(unittest.TestCase):
         prompts = [call[2]["prompt"] for call in gateway.calls if call[0] == "POST" and call[2] is not None]
         self.assertEqual(len(prompts), 2)
         self.assertEqual(prompts[0], prompts[1])
+
+
+def _write_evaluate_fixture(directory: str, *, case_id: str = "too-short") -> tuple[str, str, str]:
+    profile_path = f"{directory}/profile.json"
+    cases_path = f"{directory}/cases.jsonl"
+    history_path = f"{directory}/evals.jsonl"
+    save_profile(DecisionProfile(user_id="u1", criteria={}), profile_path)
+    case = EvaluationCase(
+        id=case_id,
+        request=ArtifactReviewRequest(
+            task_type="blog_outline",
+            intent="write about Decision Agent",
+            artifact="Too short.",
+        ),
+        user_judgment=UserFeedback(
+            verdict="revise",
+            notes="Too short to judge.",
+            core_issues=("artifact is too short",),
+            revision_direction="add enough outline detail",
+        ),
+    )
+    with open(cases_path, "w", encoding="utf-8") as file:
+        file.write(json.dumps(case.to_dict(), ensure_ascii=False))
+        file.write("\n")
+    return profile_path, cases_path, history_path
 
 
 if __name__ == "__main__":

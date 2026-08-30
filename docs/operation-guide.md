@@ -29,25 +29,32 @@ records/
 
 cases/
   blog_outline_cases.jsonl
+
+evals/
+  blog_outline_evals.jsonl
 ```
 
 - `profiles/*.json` is the current judgment profile.
 - `records/*.jsonl` is append-only operational history.
 - `cases/*.jsonl` is a fixed evaluation set used to measure improvement.
+- `evals/*.jsonl` is append-only `evaluate` run history used to compare against previous runs.
 
 Decision history lives only in append-only JSONL (`--records`). Profiles store
 the editable judgment summary (rules, patterns, known mistakes) and do **not**
 embed `decision_records`. `review` / `evaluate` / `iterate` use history from
 `--records` when provided; omitting it means empty history.
 
+Give every evaluation case a stable `id`. `evaluate` warns when a case is missing
+one and falls back to `case-{index}`, which shifts if you insert or reorder rows.
+Use `--strict` to fail instead. Do not treat `records`, `cases`, and `evals` as
+the same thing. Records are the work log. Cases are the test set. Evals are the
+measurement log.
+Malformed evaluation case rows fail fast because a truncated test set would make
+accuracy numbers misleading.
+
 Profile rules are stored as structured objects with stable IDs. Legacy profiles
 that still use plain strings are accepted on read and are written back as
 structured entries the next time the profile is saved.
-
-Do not treat `records` and `cases` as the same thing. Records are the work log.
-Cases are the test set.
-Malformed evaluation case rows fail fast because a truncated test set would make
-accuracy numbers misleading.
 
 If an old profile still contains embedded `decision_records`, migrate them once:
 
@@ -165,6 +172,7 @@ PYTHONPATH=src python -m decision_agent.cli evaluate \
   profiles/default.json \
   cases/blog_outline_cases.jsonl \
   --records records/blog_outline.jsonl \
+  --history evals/blog_outline_evals.jsonl \
   --engine heuristic
 ```
 
@@ -175,6 +183,13 @@ The report includes:
 - `revision_direction_accuracy`: how often the suggested direction matches
 - `common_misses`: recurring issues the agent fails to notice
 - `suggested_profile_updates`: candidate rules to add to the profile
+- `delta_vs_previous`: accuracy change versus the previous run with the same
+  case-set fingerprint and engine. `null` on the first comparable run, or when
+  the case file or engine does not match any stored run
+
+`--history` appends one `EvaluationRun` line to JSONL. Comparison uses the case
+file content hash and the engine name, not the profile hash, so profile updates
+on a fixed case set still produce a previous-run delta.
 
 `--engine llm` changes the engine that produces each review. Agreement scoring
 in the current implementation remains heuristic text matching for both engines;
@@ -227,7 +242,8 @@ A practical rhythm:
 2. Capture user judgment.
 3. Run `iterate`.
 4. Add the case to `cases/*.jsonl` if it represents an important judgment.
-5. Run `evaluate` after every 5 to 10 new cases.
+5. Run `evaluate` after every 5 to 10 new cases, with `--history` so the
+   previous-run delta is recorded.
 6. Add only approved profile updates.
 7. Repeat.
 

@@ -558,7 +558,8 @@ Implemented first steps:
 - `iterate` CLI behavior that reviews, learns, updates the profile, and appends
   the raw record in one pass
 - `evaluate` CLI behavior that reports verdict, core issue, and revision
-  direction alignment
+  direction alignment, optional `--history` JSONL, `delta_vs_previous` against
+  the previous matching case set and engine, and `--strict` for missing case ids
 - dependency-free Japanese/mixed-text heuristic matching using character n-gram
   containment in addition to English-like token containment
 - `rules list/approve/reject/retire` CLI behavior for non-interactive rule
